@@ -20,7 +20,7 @@ Setting = {
     'expansion_allowed': True,           # whether gen/line expansion is allowed
     'is_copper_plate_approx': False,         # whether to use copper plate model (no transmission lines)
     'UC_active': True,                  # whether unit commitment is active
-    'relax_int_vars': False,                 # whether to relax integer variables in the optimization   
+    'relax_int_vars': True,                 # whether to relax integer variables in the optimization   
     'relax_UC_vars': True,               # whether to relax unit commitment variables
     'load_shedding_penalty': 10000,      # penalty for load shedding
     'WACC': 0.062,                       # weighted average cost of capital

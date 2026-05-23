@@ -68,9 +68,7 @@ class Power_System_Operational_Decision_Values(Power_System_Operational_Decision
 
 class Oper_Constraints_Names:
     def __init__(self, data):
-        self.prod_limit_thermal = [];
-        self.prod_limit_solar = [];
-        self.prod_limit_wind = [];
+        self.prod_limit = [];
         self.load_balance = [];
         self.ramp_limit_up = [];
         self.ramp_limit_down = [];
@@ -83,7 +81,7 @@ class Oper_Constraints_Names:
         self.RPS = [];
         self.CRM = [];
         self.land_availability = [];
-        self.line_expansion_limit = [];
+        self.emissions_limit = [];
 
 class Dual_vals(Oper_Constraints_Names):
     def __init__(self, data=None): super().__init__(data);

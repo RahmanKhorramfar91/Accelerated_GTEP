@@ -84,7 +84,9 @@ def oper_const_production_limits(Model, DVi, DVo, Con, DVi_vals, sp_hours, data,
     # production limits for each generator type at each node at each time period
     nT = len(sp_hours);
     Con.prod_limit =np.empty((data.num_generators, data.num_nodes, nT), dtype=object);
-    if Setting['solution_method']=='extensive_form':
+
+
+    if Setting['solution_method']=='extensive_form':  # all the same excep the rhs in RBD to capture duals
         for g in range(data.num_generators):
             for n in range(data.num_nodes):
                 for t in range(nT):
@@ -106,7 +108,6 @@ def oper_const_production_limits(Model, DVi, DVo, Con, DVi_vals, sp_hours, data,
                         Con.prod_limit[g,n,t] = Model.add_linear_constraint(DVo.generation[g,n,t], poi.Leq, data.Nodes[n].wind_cf[sp_hours[t]]*data.Generators[g].nameplate_capacity*DVi_vals.gen_operational[g,n]);
 
 
-
 def oper_const_ramping(Model, DVi, DVo, DVi_vals, Con, nT, data, Setting):  
     Con.ramp_limit_up = np.empty((data.num_generators, data.num_nodes, nT), dtype=object);
     Con.ramp_limit_down = np.empty((data.num_generators, data.num_nodes, nT), dtype=object);
@@ -126,13 +127,14 @@ def oper_const_ramping(Model, DVi, DVo, DVi_vals, Con, nT, data, Setting):
                         Con.ramp_limit_down[g,n,t] = Model.add_linear_constraint(-DVo.generation[g,n,t]+DVo.generation[g,n,t-1]-data.Generators[g].ramp_rate*data.Generators[g].nameplate_capacity*DVi.gen_operational[g,n], poi.Leq, 0);
 
 
-def oper_const_balance_equation(Model, DV, Con, nT, data, Setting):
+def oper_const_balance_equation(Model, DV, Con, sp_hours, data, Setting):
+    nT = len(sp_hours);
     # balance equation for each node at each time period
     if Setting['is_copper_plate_approx']:
         Con.load_balance = np.empty((nT), dtype=object);
         for t in range(nT):
             rhs = 0;
-            [rhs := rhs + data.Nodes[n].demand[data.rep_hours[t]] for n in range(data.num_nodes)];
+            [rhs := rhs + data.Nodes[n].demand[sp_hours[t]] for n in range(data.num_nodes)];
             Con.load_balance[t] = Model.add_linear_constraint(
             poi.quicksum(DV.generation[g,n,t] for g in range(data.num_generators) for n in range(data.num_nodes)) +
             poi.quicksum(DV.storage_discharge[s,n,t] for s in range(data.num_storages) for n in range(data.num_nodes)) - 
@@ -150,8 +152,9 @@ def oper_const_balance_equation(Model, DV, Con, nT, data, Setting):
                     poi.quicksum(DV.storage_discharge[s,n,t] for s in range(data.num_storages)) - 
                     poi.quicksum(DV.storage_charge[s,n,t] for s in range(data.num_storages)) +                                                                              
                     DV.load_shedding[n,t],   
-                    poi.Eq, data.Nodes[n].demand[data.rep_hours[t]]
+                    poi.Eq, data.Nodes[n].demand[sp_hours[t]]
                 );
+
 
 def oper_const_flow_limits(Model, DVi, DVo, DVi_vals, Con, nT, data, Setting):
     # flow limits for each line at each time period
@@ -201,23 +204,22 @@ def oper_const_emissions_limit(Model, DVi, DVo, DVi_vals, Con, scen_set, hours_w
     Con.emissions_limit = np.empty((len(scen_set)), dtype=object);
     if Setting['solution_method']=='extensive_form':
         if Setting['Decarbonization_target'] >0:
-            for dv, di in enumerate(scen_set):
+            for di, dv in enumerate(scen_set):
+                Con.emissions_limit[dv] = Model.add_linear_constraint(
+                    poi.quicksum(hours_weights[t]*DVo.generation[g,n,t]*data.Generators[g].heat_rate*data.Generators[g].emission_kg_per_MMBtu
+                    for g in range(data.num_generators) 
+                    for n in range(data.num_nodes) 
+                    for t in range(dv*Setting['hours_per_period'], (dv+1)*Setting['hours_per_period']) if data.Generators[g].is_thermal)
+                    -DVi.emissions_per_period[di], poi.Leq, 0); 
+    else:
+        if Setting['Decarbonization_target'] >0:
+            for di, dv in enumerate(scen_set):
                 Con.emissions_limit[di] = Model.add_linear_constraint(
                     poi.quicksum(hours_weights[t]*DVo.generation[g,n,t]*data.Generators[g].heat_rate*data.Generators[g].emission_kg_per_MMBtu
                     for g in range(data.num_generators) 
                     for n in range(data.num_nodes) 
-                    for t in range(di*Setting['hours_per_period'], (di+1)*Setting['hours_per_period']) if data.Generators[g].is_thermal)
-                    -DVi.emissions_per_period[dv], poi.Leq, 0); 
-        else:
-            for dv, di in enumerate(scen_set):
-                Con.emissions_limit[di] = Model.add_linear_constraint(
-                    poi.quicksum(hours_weights[t]*DVo.generation[g,n,t]*data.Generators[g].heat_rate*data.Generators[g].emission_kg_per_MMBtu
-                    for g in range(data.num_generators) 
-                    for n in range(data.num_nodes) 
-                    for t in range(di*Setting['hours_per_period'], (di+1)*Setting['hours_per_period']) if data.Generators[g].is_thermal),
+                    for t in range(len(hours_weights)) if data.Generators[g].is_thermal),
                     poi.Leq, DVi_vals.emissions_per_period[dv]);    
-
-
 
 
 def oper_const_storage(Model, DVi, DVo, DVi_vals, Con, nT, data, Setting):
@@ -258,22 +260,6 @@ def oper_const_storage(Model, DVi, DVo, DVi_vals, Con, nT, data, Setting):
                     Con.storage_charge_limit[n,t] = Model.add_linear_constraint(DVo.storage_charge[s,n,t], poi.Leq, DVi_vals.storage_capacity[s,n]);
                     Con.storage_discharge_limit[n,t] = Model.add_linear_constraint(DVo.storage_discharge[s,n,t], poi.Leq, DVi_vals.storage_capacity[s,n]);
                     Con.storage_SOC_limit[n,t] = Model.add_linear_constraint(DVo.SOC[s,n,t], poi.Leq, DVi_vals.storage_level[s,n]);
-
-    # for s in range(data.num_storages):
-    #     for n in range(data.num_nodes):
-    #         for t in range(data.num_rep_hours):
-    #             if t>0:
-    #                 Model.add_linear_constraint(DVo.SOC[s,n,t]-(1-data.Storages[s].self_discharge)*DVo.SOC[s,n,t-1] -
-    #                 data.Storages[s].charging_eff*DVo.storage_charge[s,n,t] +
-    #                 DVo.storage_discharge[s,n,t]/data.Storages[s].discharging_eff,
-    #                 poi.Eq, 0);
-    #             else:
-    #                 Model.add_linear_constraint(DVo.SOC[s,n,t]- DVo.storage_level[s,n]/2, poi.Eq, 0);
-
-    #             Model.add_linear_constraint(DVi.storage_capacity[s,n]-DVo.storage_charge[s,n,t], poi.Geq, 0);
-    #             Model.add_linear_constraint(DVi.storage_capacity[s,n]-DVo.storage_discharge[s,n,t], poi.Geq, 0);
-    #             Model.add_linear_constraint(DVi.storage_level[s,n]-DVo.SOC[s,n,t], poi.Geq, 0);
-
 
 def set_inv_decision_from_in_sample(Model, DV, data, Setting):
 

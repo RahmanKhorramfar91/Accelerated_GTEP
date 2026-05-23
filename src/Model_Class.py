@@ -77,7 +77,7 @@ class Power_System_Model():
     def add_operation_constraints(self):       
         Constraints.oper_const_production_limits(self.Model, self.DVi, self.DVo, self.Con, self.DVi_values, self.data.rep_hours, self.data, self.Setting); 
         Constraints.oper_const_ramping(self.Model, self.DVi, self.DVo, self.DVi_values, self.Con, self.data.num_rep_hours, self.data, self.Setting);          
-        Constraints.oper_const_balance_equation(self.Model, self.DVo, self.Con, self.data.num_rep_hours, self.data, self.Setting);
+        Constraints.oper_const_balance_equation(self.Model, self.DVo, self.Con, self.data.rep_hours, self.data, self.Setting);
         Constraints.oper_const_flow_limits(self.Model, self.DVi, self.DVo, self.DVi_values, self.Con, self.data.num_rep_hours, self.data, self.Setting); 
         # Constraints.oper_const_RPS(self.Model, self.DVi, self.DVo, self.data, self.Setting); 
         Constraints.oper_const_emissions_limit(self.Model, self.DVi, self.DVo, self.DVi_values, self.Con, range(self.data.num_rep_periods), self.data.rep_hours_weights, self.data, self.Setting); 
@@ -88,7 +88,7 @@ class Power_System_Model():
         Get_Vals.get_operational_variable_values(self.Model, self.DVo, self.DVo_values, self.data.num_rep_hours, self.data);
 
     def print_results(self, start_time,RAM_MB):
-        Print_Outcomes.publish_summary(self.DVi_values, self.DVo_values, self.data, self.Setting, start_time, self.Model.get_model_attribute(poi.ModelAttribute.RelativeGap), RAM_MB);
+        Print_Outcomes.publish_summary(self.DVi_values, self.DVo_values, [], [],[], self.data, self.Setting, start_time, self.Model.get_model_attribute(poi.ModelAttribute.RelativeGap), RAM_MB);
         if self.Setting['print_extensive_outcome']:
             Print_Outcomes.publish_extensive_form(self.DVi_values, self.DVo_values, self.Duals, self.data, self.Setting);
 

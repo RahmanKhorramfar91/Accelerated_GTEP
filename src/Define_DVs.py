@@ -48,7 +48,7 @@ def define_operational_decision_variables(Model, DV, nT, data):
     DV.storage_charge = Model.add_variables(range(data.num_storages), range(data.num_nodes), range(nT), lb=0, domain=poi.VariableDomain.Continuous);
     DV.storage_discharge = Model.add_variables(range(data.num_storages), range(data.num_nodes), range(nT), lb=0, domain=poi.VariableDomain.Continuous);
     DV.SOC = Model.add_variables(range(data.num_storages), range(data.num_nodes), range(nT), lb=0, domain=poi.VariableDomain.Continuous);
-    DV.flow = Model.add_variables(range(data.num_lines), range(nT),  domain=poi.VariableDomain.Continuous);
+    DV.flow = Model.add_variables(range(data.num_lines), range(nT),  domain=poi.VariableDomain.Continuous);# free variable
 
     # cost components
     DV.operational_cost = Model.add_variable(lb=0, domain=poi.VariableDomain.Continuous);

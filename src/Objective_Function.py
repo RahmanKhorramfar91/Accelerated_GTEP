@@ -56,15 +56,15 @@ def define_investment_cost_expression(Model, DV, data, Setting):
 
 
 def define_operational_cost_expression(Model, DV, hours_weights, data, Setting):
-
+    nT = len(hours_weights);
     # generation variable operation and maintenance cost
-    Model.add_linear_constraint(DV.VOM_cost-poi.quicksum(hours_weights[t]* data.Generators[g].VOM_per_MWh * DV.generation[g, n, t] for g in range(data.num_generators) for n in range(data.num_nodes) for t in range(data.num_rep_hours)), poi.Eq, 0);
+    Model.add_linear_constraint(DV.VOM_cost-poi.quicksum(hours_weights[t]* data.Generators[g].VOM_per_MWh * DV.generation[g, n, t] for g in range(data.num_generators) for n in range(data.num_nodes) for t in range(nT)), poi.Eq, 0);
 
     # load shedding cost
-    Model.add_linear_constraint(DV.load_shedding_cost-poi.quicksum(hours_weights[t]*DV.load_shedding[n, t] * Setting['load_shedding_penalty'] for n in range(data.num_nodes) for t in range(data.num_rep_hours)), poi.Eq, 0);
+    Model.add_linear_constraint(DV.load_shedding_cost-poi.quicksum(hours_weights[t]*DV.load_shedding[n, t] * Setting['load_shedding_penalty'] for n in range(data.num_nodes) for t in range(nT)), poi.Eq, 0);
 
     # gas fuel cost
-    Model.add_linear_constraint(DV.gas_fuel_cost-poi.quicksum(hours_weights[t]*data.Generators[g].heat_rate* DV.generation[g, n, t] * Setting['NG_price'] for g in range(data.num_generators) for n in range(data.num_nodes) for t in range(data.num_rep_hours) if data.Generators[g].is_thermal), poi.Eq, 0); 
+    Model.add_linear_constraint(DV.gas_fuel_cost-poi.quicksum(hours_weights[t]*data.Generators[g].heat_rate* DV.generation[g, n, t] * Setting['NG_price'] for g in range(data.num_generators) for n in range(data.num_nodes) for t in range(nT) if data.Generators[g].is_thermal), poi.Eq, 0); 
 
     # total operational cost
     Model.add_linear_constraint(DV.operational_cost-
@@ -73,3 +73,10 @@ def define_operational_cost_expression(Model, DV, hours_weights, data, Setting):
                                 DV.gas_fuel_cost, 
                                 poi.Eq, 0);
 
+def define_MP_objective(Model, DV, data, Setting):
+
+    # investment cost expressions
+    define_investment_cost_expression(Model, DV, data, Setting);
+
+    # set the objective function                                 
+    Model.set_objective(DV.total_investment_cost+poi.quicksum(DV.theta[s] for s in range(data.num_rep_periods)), poi.ObjectiveSense.Minimize);

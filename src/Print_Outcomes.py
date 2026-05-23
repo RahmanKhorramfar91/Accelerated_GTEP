@@ -36,7 +36,7 @@ def publish_extensive_form(DVi_vals, DVo_vals, data, Setting):
 
         
 
-def publish_summary(DVi_vals, DVo_vals, data, Setting, start_time, relative_gap, RAM_MB):
+def publish_summary(DVi_vals, DVo_vals,step_RBD, nIter, LB_RBD, data, Setting, start_time, relative_gap, RAM_MB):
 
     res={};
     res['balancing authority'] = Setting['balancing_authority'];
@@ -44,8 +44,6 @@ def publish_summary(DVi_vals, DVo_vals, data, Setting, start_time, relative_gap,
     res['in-sample year'] = Setting['in_sample_year'];    
     res['num_rep_periods'] = Setting['num_rep_periods'];
     res['hours_per_period'] = Setting['hours_per_period'];
-    if Setting['solution_method']=='PHA':
-        res['num_rep_periods'] = [Setting['num_rep_periods'], Setting['num_periods_per_scenario']];
     res['RPS'] = Setting['RPS'];
     res['Decarbonization target'] = Setting['Decarbonization_target'];
     res['CRM reserve'] = Setting['CRM_reserve'];
@@ -54,6 +52,19 @@ def publish_summary(DVi_vals, DVo_vals, data, Setting, start_time, relative_gap,
     res['is UC active?'] = Setting['UC_active'];
     res['is integer vars relaxed?']= Setting['relax_int_vars'];
     res['is UC vars relaxed?']= Setting['relax_UC_vars'];
+    if Setting['solution_method']=='RBD':
+        res['step']=step_RBD;
+    else: 
+        res['step'] = 'NA';
+    if Setting['solution_method']=='RBD':
+        res['nIter'] = nIter;
+    else:
+        res['nIter'] = 'NA'
+    if Setting['solution_method']=='RBD':
+        res['LB'] = LB_RBD;
+    else:
+        res['LB'] = 'NA';
+    
 
     res['relative gap'] = relative_gap;
     res['sol-method'] = Setting['solution_method'];

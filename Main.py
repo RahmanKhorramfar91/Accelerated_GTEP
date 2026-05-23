@@ -14,9 +14,9 @@ from Setting import Setting;
 import sys; 
 from src.Data_Loader import Data;
 from src.Model_Class import Power_System_Model;
-from src.BD_Class import BD;
+# from src.BD_Class import BD;
+from src.Benders import BD;
 # from src.RBD import RBD;
-from src.RBD import RBD;
 import psutil, os;  # for memory usage
 
 #%% Set Default Setting for the Porblem 
@@ -40,9 +40,8 @@ Setting['num_rep_periods'] = 2;
 Setting['hours_per_period'] = 7 * 24;
 Setting['RPS'] = 0.0;
 Setting['Decarbonization_target'] = 0.8;
-Setting['solution_method'] = 'extensive_form';
-# Setting['solution_method'] = 'benders_multicut';
-# Setting['solution_method'] = 'RBD'; # Regularized Benders
+# Setting['solution_method'] = 'extensive_form';
+Setting['solution_method'] = 'RBD'; # Regularized Benders
 
 data = Data(Setting);
 
@@ -51,8 +50,6 @@ if Setting['solution_method']=='extensive_form':
     power_model.build_model();
     power_model.solve_EF_model();
     power_model.get_DV_values();
-    # if Setting['relax_int_vars']:
-    #     power_model.get_constraint_duals();
     process = psutil.Process(os.getpid())
     memory_info = process.memory_info();
     RAM_MB = memory_info.rss / (1024 * 1024);
@@ -61,8 +58,8 @@ if Setting['solution_method'] == 'benders_multicut':
     power_model= BD();
     power_model.Benders_run(data, Setting);
 if Setting['solution_method'] == 'RBD':
-    power_model= RBD();
-    power_model.RBD_run(data, Setting);
+    Benders_model = BD(data, Setting);
+    Benders_model.run_Benders();
 
 process = psutil.Process(os.getpid());
 memory_info = process.memory_info();
