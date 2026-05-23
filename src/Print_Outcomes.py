@@ -71,16 +71,16 @@ def publish_summary(DVi_vals, DVo_vals,step_RBD, nIter, LB_RBD, data, Setting, s
     res['RAM (MB)'] = RAM_MB;
     res['run time(s)'] = time.time()-start_time;
 
-    res['total system cost'] = DVi_vals.total_investment_cost + DVo_vals.operational_cost;
-    res['est gen cost'] = DVi_vals.gen_est_cost;
-    res['est line cost'] = DVi_vals.line_est_cost;
-    res['est storage cost'] = DVi_vals.storage_est_cost;
-    res['VOM cost'] = DVo_vals.VOM_cost;
-    res['shedding cost'] = DVo_vals.load_shedding_cost;
-    res['gas fuel cost'] = DVo_vals.gas_fuel_cost;
-    res['FOM gen cost'] = DVi_vals.gen_FOM_cost;
-    res['FOM line cost'] = DVi_vals.line_FOM_cost;
-    res['FOM storage cost'] = DVi_vals.storage_FOM_cost;
+    res['total system cost'] = round(DVi_vals.total_investment_cost + DVo_vals.operational_cost);
+    res['est gen cost'] = round(DVi_vals.gen_est_cost);
+    res['est line cost'] = round(DVi_vals.line_est_cost);
+    res['est storage cost'] = round(DVi_vals.storage_est_cost);
+    res['VOM cost'] = round(DVo_vals.VOM_cost);
+    res['shedding cost'] = round(DVo_vals.load_shedding_cost);
+    res['gas fuel cost'] = round(DVo_vals.gas_fuel_cost);
+    res['FOM gen cost'] = round(DVi_vals.gen_FOM_cost);
+    res['FOM line cost'] = round(DVi_vals.line_FOM_cost);
+    res['FOM storage cost'] = round(DVi_vals.storage_FOM_cost);
     res['CO2 emissions'] = sum(DVi_vals.emissions_per_period[d] for d in range(data.num_rep_periods));
     
     
@@ -92,17 +92,17 @@ def publish_summary(DVi_vals, DVo_vals,step_RBD, nIter, LB_RBD, data, Setting, s
     num_established_lines = sum(1 for l in range(data.num_lines) if DVi_vals.line_established[l]>0)
     total_new_line_cap = sum(DVi_vals.line_established[l] for l in range(data.num_lines));
 
-    res['total storage level'] = total_storage_level;
-    res['total storage capacity'] = total_storage_capacity;
-    res['total shed load']= total_shed_load;
-    res['total established lines'] = num_established_lines;
-    res['total new line capacity(MW)'] = total_new_line_cap;
+    res['total storage level'] = round(total_storage_level);
+    res['total storage capacity'] = round(total_storage_capacity);
+    res['total shed load']= round(total_shed_load);
+    res['total established lines'] = round(num_established_lines);
+    res['total new line capacity(MW)'] = round(total_new_line_cap);
     
     for g in range(data.num_generators):
         cap1=0;
         for n in range(data.num_nodes):
             cap1 += DVi_vals.gen_established[g,n];
-        res[f'{data.Generators[g].Type}-cap'] = cap1;
+        res[f'{data.Generators[g].Type}-cap'] = np.round(cap1,2);
     
     total_gen = 0;
     for g in range(data.num_generators):
@@ -110,11 +110,11 @@ def publish_summary(DVi_vals, DVo_vals,step_RBD, nIter, LB_RBD, data, Setting, s
         for n in range(data.num_nodes):
             for t in range(data.num_rep_hours):
                 gen1 += DVo_vals.generation[g,n,t]*data.rep_hours_weights[t];
-        res[f'{data.Generators[g].Type}-gen'] = gen1;
+        res[f'{data.Generators[g].Type}-gen'] = np.round(gen1,2);
         total_gen += gen1;
-    res['total generation'] = total_gen;   
+    res['total generation'] = round(total_gen);   
     total_demand = sum(data.Nodes[n].demand[data.rep_hours[t]]*data.rep_hours_weights[t] for n in range(data.num_nodes) for t in range(data.num_rep_hours));
-    res['total demand'] = total_demand;
+    res['total demand'] = round(total_demand);
 
 
 

@@ -26,6 +26,8 @@ import src.Objective_Function as Objective_Function;
 import src.Get_Vals as Get_Vals;
 import src.Print_Outcomes as Print_Outcomes;
 import psutil, os;  # for memory usage
+import copy;
+
 
 class BD():
     def __init__(self, data, Setting):
@@ -68,23 +70,29 @@ class BD():
                 # print(f'load shedding values: {self.SP_DV_values[sp].load_shedding}');
                 self.Cuts[iter][sp] = self.SP_Duals[sp]; # record the cuts
                 self.add_optimality_cut_to_MP_model(sp);
-
+            
             # update UB and the best inv decisions
             self.update_UB_and_best_investment_values();
+            # if iter>60:
+            #     self.print_sum_inv_variables(self.best_MP_DV_vals);
 
             # set the objective (changes in the regulaized problem) and re-solve MP, get inv values
             Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
             self.MP_model.optimize();
             Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-            
-            
+            # if iter>60:
+            #     self.print_sum_inv_variables(self.best_MP_DV_vals);
+
             # update LB, calculate gap
             self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
             Gap = np.round((self.UB-self.LB)*100/self.UB,1);
             print(f'\t\t\t Iteration {iter}: LB={round(self.LB/1e7)}e7, UB={round(self.UB/1e7)}e7, Gap={Gap}%');
     
+
+
             if abs(self.UB-self.LB)/self.UB < self.Setting['solver_gap']: # if converged enough
                 print('Convergence achieved!');
+                self.update_UB_and_best_investment_values();
                 self.print_best_feasible_solution(step_RBD, start_time, Gap, iter);
                 break;
             else:
@@ -104,6 +112,8 @@ class BD():
             self.build_SP_model(self.best_MP_DV_vals, sp);
             self.SP_model[sp].optimize();
             self.get_SP_DV_dual_vals(sp); # both dual and DV values
+            print(f'SP {sp} Objective value: {np.round(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.ObjectiveValue)/1e7,1)}e7, shedding: {round(self.SP_DV_values[sp].load_shedding_cost)}, fuel: {round(self.SP_DV_values[sp].gas_fuel_cost)}, VOM: {round(self.SP_DV_values[sp].VOM_cost)}');
+
         DVo_vals = DV_Classes.Power_System_Operational_Decision_Values();
         Get_Vals.concat_SP_models_values(self.SP_DV_values, DVo_vals, self.data, self.Setting);
         process = psutil.Process(os.getpid());
@@ -118,8 +128,8 @@ class BD():
             UB_temp += self.SP_DV_values[sp].operational_cost;
         if UB_temp < self.UB:
             self.UB = UB_temp;
-            self.best_MP_DV_vals = self.MP_DV_values;
-            self.print_sum_inv_variables(self.best_MP_DV_vals);
+            self.best_MP_DV_vals = copy.deepcopy(self.MP_DV_values);
+            # self.print_sum_inv_variables(self.best_MP_DV_vals);
 
 
     def print_sum_inv_variables(self, MP_vals):
