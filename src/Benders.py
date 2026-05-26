@@ -72,7 +72,7 @@ class BD():
                 self.add_optimality_cut_to_MP_model(sp);
             
             # update UB and the best inv decisions
-            self.update_UB_and_best_investment_values();
+            self.update_UB_and_best_investment_values(iter);
             # if iter>60:
             #     self.print_sum_inv_variables(self.best_MP_DV_vals);
 
@@ -122,7 +122,7 @@ class BD():
         Print_Outcomes.publish_summary(self.MP_DV_values, DVo_vals, step_RBD, nIter, self.LB, self.data, self.Setting, start_time, Gap, RAM_MB);
                 
 
-    def update_UB_and_best_investment_values(self):
+    def update_UB_and_best_investment_values(self, iter):
         UB_temp = self.MP_DV_values.total_investment_cost;
         for sp in range(self.data.num_rep_periods):
             UB_temp += self.SP_DV_values[sp].operational_cost;
@@ -130,6 +130,13 @@ class BD():
             self.UB = UB_temp;
             self.best_MP_DV_vals = copy.deepcopy(self.MP_DV_values);
             # self.print_sum_inv_variables(self.best_MP_DV_vals);
+        total_op_cost=0;
+        if iter>60:
+            for d in range(self.data.num_rep_periods):
+                print(f'SP {d}, cost: {self.best_MP_DV_vals[d].operational_cost}')
+                total_op_cost += self.best_MP_DV_vals[d].operational_cost;
+            print(f'total cost: {round((self.best_MP_DV_vals+total_op_cost)/1e7,1)}e7');
+            
 
 
     def print_sum_inv_variables(self, MP_vals):
