@@ -60,16 +60,17 @@ class BD():
         print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
         Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
         Gap = np.inf;
-
+        MaxIter=100; IterCount = -1;
         # main loop for Step 0
-        for iter in range(100):
+        while True:
+            IterCount += 1;
             self.Cuts.append([[] for _ in range(self.data.num_rep_periods)]);
             for sp in range(self.data.num_rep_periods):
                 self.build_SP_model(self.MP_DV_values, sp);
                 self.SP_model[sp].optimize();
                 self.get_SP_DV_dual_vals(sp); # both dual and DV values
                 # print(f'SP {sp} Objective value: {np.round(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.ObjectiveValue)/1e7,1)}e7, shedding: {round(self.SP_DV_values[sp].load_shedding_cost)}, fuel: {round(self.SP_DV_values[sp].gas_fuel_cost)}, VOM: {round(self.SP_DV_values[sp].VOM_cost)}');                    
-                self.Cuts[iter][sp] = self.SP_Duals[sp]; # record the cuts
+                self.Cuts[IterCount][sp] = self.SP_Duals[sp]; # record the cuts
                 self.add_optimality_cut_to_MP_model(sp, self.SP_Duals[sp]);
             
             # update UB and the best inv decisions
@@ -83,58 +84,62 @@ class BD():
             # update LB, calculate gap
             self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
             Gap = np.round((self.UB-self.LB)*100/self.UB,1);
-            print(f'\t\t\t Iteration {iter}: LB={round(self.LB/1e7)}e7, UB={round(self.UB/1e7)}e7, Gap={Gap}%');
+            print(f'\t\t\t Iteration {IterCount}: LB={round(self.LB/1e7)}e7, UB={round(self.UB/1e7)}e7, Gap={Gap}%');
             if abs(self.UB-self.LB)/self.UB < self.Setting['solver_gap']: # if converged enough
                 print('Convergence achieved!');
-                self.print_best_feasible_solution(step_RBD, start_time, Gap, iter);
+                self.print_best_feasible_solution(step_RBD, start_time, Gap, IterCount);
                 break;
             else:
                 # solve regulaized MP, get new inv values
                 self.solve_regularized_MP();
+            if IterCount>MaxIter:
+                print(f'maximum iteration attained! ');
+                self.print_best_feasible_solution(step_RBD, start_time, Gap, IterCount);
+                break;
         
-        if not is_LP:
-            self.Setting['relax_int_vars'] = False;
-            step_RBD = 1;
-            self.LB = 0;
-            self.UB = 600e7;
-            self.build_MP_model();
-            # add cuts from previous step
-            self.add_cuts_from_step0();
-            self.MP_model.optimize();
-            print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
-            Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-            Gap = np.inf;
-                    # main loop for Step 0
-            for iter in range(100):
-                self.Cuts.append([[] for _ in range(self.data.num_rep_periods)]);
-                for sp in range(self.data.num_rep_periods):
-                    self.build_SP_model(self.MP_DV_values, sp);
-                    self.SP_model[sp].optimize();
-                    self.get_SP_DV_dual_vals(sp); # both dual and DV values
-                    # print(f'SP {sp} Objective value: {np.round(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.ObjectiveValue)/1e7,1)}e7, shedding: {round(self.SP_DV_values[sp].load_shedding_cost)}, fuel: {round(self.SP_DV_values[sp].gas_fuel_cost)}, VOM: {round(self.SP_DV_values[sp].VOM_cost)}');                    
-                    self.Cuts[iter][sp] = self.SP_Duals[sp]; # record the cuts
-                    self.add_optimality_cut_to_MP_model(sp, self.SP_Duals[sp]);
+        # if not is_LP:
+        #     self.Setting['relax_int_vars'] = False;
+        #     step_RBD = 1;
+        #     self.LB = 0;
+        #     self.UB = 530e7;
+        #     self.build_MP_model();
+        #     # add cuts from previous step
+        #     self.add_cuts_from_step0();
+        #     self.MP_model.optimize();
+        #     print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
+        #     Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
+        #     Gap = np.inf;
+        #             # main loop for Step 0
+        #     for iter in range(200):
+        #         self.Cuts.append([[] for _ in range(self.data.num_rep_periods)]);
+        #         for sp in range(self.data.num_rep_periods):
+        #             self.build_SP_model(self.MP_DV_values, sp);
+        #             self.SP_model[sp].optimize();
+        #             self.get_SP_DV_dual_vals(sp); # both dual and DV values
+        #             # print(f'SP {sp} Objective value: {np.round(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.ObjectiveValue)/1e7,1)}e7, shedding: {round(self.SP_DV_values[sp].load_shedding_cost)}, fuel: {round(self.SP_DV_values[sp].gas_fuel_cost)}, VOM: {round(self.SP_DV_values[sp].VOM_cost)}');                    
+        #             self.Cuts[iter][sp] = self.SP_Duals[sp]; # record the cuts
+        #             self.add_optimality_cut_to_MP_model(sp, self.SP_Duals[sp]);
                 
-                # update UB and the best inv decisions
-                self.update_UB_and_best_investment_values();
+        #         # update UB and the best inv decisions
+        #         self.update_UB_and_best_investment_values();
             
-                # set the objective (changes in the regulaized problem) and re-solve MP, get inv values
-                Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
-                self.MP_model.optimize();
-                Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-                self.print_sum_inv_variables(self.MP_DV_values);
+        #         # set the objective (changes in the regulaized problem) and re-solve MP, get inv values
+        #         Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
+        #         self.MP_model.optimize();
+        #         Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
+        #         self.print_sum_inv_variables(self.MP_DV_values);
 
-                # update LB, calculate gap
-                self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
-                Gap = np.round((self.UB-self.LB)*100/self.UB,1);
-                print(f'\t\t\t Iteration {iter}: LB={round(self.LB/1e7)}e7, UB={round(self.UB/1e7)}e7, Gap={Gap}%');
-                if abs(self.UB-self.LB)/self.UB < self.Setting['solver_gap']: # if converged enough
-                    print('Convergence achieved!');
-                    self.print_best_feasible_solution(step_RBD, start_time, Gap, iter);
-                    break;
-                else:
-                    # solve regulaized MP, get new inv values
-                    self.solve_regularized_MP();
+        #         # update LB, calculate gap
+        #         self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
+        #         Gap = np.round((self.UB-self.LB)*100/self.UB,1);
+        #         print(f'\t\t\t Iteration {iter}: LB={round(self.LB/1e7)}e7, UB={round(self.UB/1e7)}e7, Gap={Gap}%');
+        #         if abs(self.UB-self.LB)/self.UB < self.Setting['solver_gap']: # if converged enough
+        #             print('Convergence achieved!');
+        #             self.print_best_feasible_solution(step_RBD, start_time, Gap, iter);
+        #             break;
+        #         else:
+        #             # solve regulaized MP, get new inv values
+        #             self.solve_regularized_MP();
 
     def add_cuts_from_step0(self):
         for c in range(len(self.Cuts)):
@@ -169,12 +174,12 @@ class BD():
             for n in range(self.data.num_nodes):
                 if MP_vals.gen_operational[g,n] > 0.5:
                     print(f'gen_op[{g},{n}] = {round(MP_vals.gen_operational[g,n])}');
-        # for s in range(self.data.num_storages):
-        #     for n in range(self.data.num_nodes):
-        #         if MP_vals.storage_level[s,n] > 0.5:
-        #             print(f'storage_level[{s},{n}] = {round(MP_vals.storage_level[s,n])}');
-        #         if MP_vals.storage_capacity[s,n] >0.5:
-        #             print(f'storage_capacity[{s},{n}] = {round(MP_vals.storage_capacity[s,n])}');
+        for s in range(self.data.num_storages):
+            for n in range(self.data.num_nodes):
+                if MP_vals.storage_level[s,n] > 0.5:
+                    print(f'storage_level[{s},{n}] = {round(MP_vals.storage_level[s,n])}');
+                if MP_vals.storage_capacity[s,n] >0.5:
+                    print(f'storage_capacity[{s},{n}] = {round(MP_vals.storage_capacity[s,n])}');
         for l in range(self.data.num_lines):
             if MP_vals.line_established[l] > 0.5:
                 print(f'line_established[{l}] = {round(MP_vals.line_established[l])}');
