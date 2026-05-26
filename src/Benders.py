@@ -51,46 +51,39 @@ class BD():
     
     def run_Benders(self):
         start_time = time.time()
-        is_MILP = self.Setting['relax_int_vars'];
+        is_LP = self.Setting['relax_int_vars']; 
+        self.Setting['relax_int_vars'] = True;       
+        step_RBD = 0;
         self.build_MP_model();
         
         self.MP_model.optimize();
         print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
         Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-        step_RBD = 0; Gap = np.inf;
+        Gap = np.inf;
+
         # main loop for Step 0
         for iter in range(100):
             self.Cuts.append([[] for _ in range(self.data.num_rep_periods)]);
             for sp in range(self.data.num_rep_periods):
                 self.build_SP_model(self.MP_DV_values, sp);
                 self.SP_model[sp].optimize();
-                # print(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.TerminationStatus));
                 self.get_SP_DV_dual_vals(sp); # both dual and DV values
-                print(f'SP {sp} Objective value: {np.round(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.ObjectiveValue)/1e7,1)}e7, shedding: {round(self.SP_DV_values[sp].load_shedding_cost)}, fuel: {round(self.SP_DV_values[sp].gas_fuel_cost)}, VOM: {round(self.SP_DV_values[sp].VOM_cost)}');
-                
-                # print(f'load shedding values: {self.SP_DV_values[sp].load_shedding}');
+                # print(f'SP {sp} Objective value: {np.round(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.ObjectiveValue)/1e7,1)}e7, shedding: {round(self.SP_DV_values[sp].load_shedding_cost)}, fuel: {round(self.SP_DV_values[sp].gas_fuel_cost)}, VOM: {round(self.SP_DV_values[sp].VOM_cost)}');                    
                 self.Cuts[iter][sp] = self.SP_Duals[sp]; # record the cuts
-                self.add_optimality_cut_to_MP_model(sp);
+                self.add_optimality_cut_to_MP_model(sp, self.SP_Duals[sp]);
             
             # update UB and the best inv decisions
             self.update_UB_and_best_investment_values();
-          
+        
             # set the objective (changes in the regulaized problem) and re-solve MP, get inv values
             Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
             self.MP_model.optimize();
             Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-           
+        
             # update LB, calculate gap
             self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
             Gap = np.round((self.UB-self.LB)*100/self.UB,1);
             print(f'\t\t\t Iteration {iter}: LB={round(self.LB/1e7)}e7, UB={round(self.UB/1e7)}e7, Gap={Gap}%');
-            # if Gap<1.5:
-            #     total_op_cost = 0;
-            #     for sp in range(self.data.num_rep_periods):
-            #         total_op_cost += self.best_SP_Vals[sp].operational_cost;
-            #         print(f'SP {sp} Objective value: {np.round(self.best_SP_Vals[sp].operational_cost/1e7,1)}e7')
-            #     print(f'total system cost: {self.best_MP_DV_vals.total_investment_cost + total_op_cost}');
-
             if abs(self.UB-self.LB)/self.UB < self.Setting['solver_gap']: # if converged enough
                 print('Convergence achieved!');
                 self.print_best_feasible_solution(step_RBD, start_time, Gap, iter);
@@ -98,8 +91,52 @@ class BD():
             else:
                 # solve regulaized MP, get new inv values
                 self.solve_regularized_MP();
+        
+        if not is_LP:
+            self.Setting['relax_int_vars'] = False;
+            step_RBD = 1;
+            self.build_MP_model();
+            # add cuts from previous step
+            self.add_cuts_from_step0();
+            self.MP_model.optimize();
+            print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
+            Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
+            Gap = np.inf;
+                    # main loop for Step 0
+            for iter in range(100):
+                self.Cuts.append([[] for _ in range(self.data.num_rep_periods)]);
+                for sp in range(self.data.num_rep_periods):
+                    self.build_SP_model(self.MP_DV_values, sp);
+                    self.SP_model[sp].optimize();
+                    self.get_SP_DV_dual_vals(sp); # both dual and DV values
+                    # print(f'SP {sp} Objective value: {np.round(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.ObjectiveValue)/1e7,1)}e7, shedding: {round(self.SP_DV_values[sp].load_shedding_cost)}, fuel: {round(self.SP_DV_values[sp].gas_fuel_cost)}, VOM: {round(self.SP_DV_values[sp].VOM_cost)}');                    
+                    self.Cuts[iter][sp] = self.SP_Duals[sp]; # record the cuts
+                    self.add_optimality_cut_to_MP_model(sp, self.SP_Duals[sp]);
+                
+                # update UB and the best inv decisions
+                self.update_UB_and_best_investment_values();
+            
+                # set the objective (changes in the regulaized problem) and re-solve MP, get inv values
+                Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
+                self.MP_model.optimize();
+                Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
+            
+                # update LB, calculate gap
+                self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
+                Gap = np.round((self.UB-self.LB)*100/self.UB,1);
+                print(f'\t\t\t Iteration {iter}: LB={round(self.LB/1e7)}e7, UB={round(self.UB/1e7)}e7, Gap={Gap}%');
+                if abs(self.UB-self.LB)/self.UB < self.Setting['solver_gap']: # if converged enough
+                    print('Convergence achieved!');
+                    self.print_best_feasible_solution(step_RBD, start_time, Gap, iter);
+                    break;
+                else:
+                    # solve regulaized MP, get new inv values
+                    self.solve_regularized_MP();
 
-
+    def add_cuts_from_step0(self):
+        for c in range(len(self.Cuts)):
+            for sp in range(self.data.num_rep_periods):
+                self.add_optimality_cut_to_MP_model(sp, self.Cuts[c][sp]);
 
 
     def print_best_feasible_solution(self, step_RBD, start_time, Gap, nIter):
@@ -145,8 +182,6 @@ class BD():
                 print(f'emissions_per_period[{d}] = {MP_vals.emissions_per_period[d]}');
         print(f'total inv cost: {MP_vals.total_investment_cost}');
 
-
-
     
     def solve_regularized_MP(self):
         alpha = 0.5;
@@ -164,7 +199,7 @@ class BD():
 
 
 
-    def add_optimality_cut_to_MP_model(self, sp):
+    def add_optimality_cut_to_MP_model(self, sp, Duals):
         # implement a function to add optimality cuts to the MP model based on the dual values obtained from the SP
         slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period']);
         sp_hours = self.data.rep_hours[slice1];
@@ -178,44 +213,44 @@ class BD():
             for n in range(self.data.num_nodes):
                 for t in range(nT):
                     if self.data.Generators[g].is_thermal:
-                        lhs -= self.SP_Duals[sp].prod_limit[g,n,t]*(self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
+                        lhs -= Duals.prod_limit[g,n,t]*(self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
                     elif self.data.Generators[g].Type=='solar-UPV':
-                        lhs -= self.SP_Duals[sp].prod_limit[g,n,t]*(self.data.Nodes[n].solar_cf[sp_hours[t]]*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
+                        lhs -= Duals.prod_limit[g,n,t]*(self.data.Nodes[n].solar_cf[sp_hours[t]]*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
                     elif self.data.Generators[g].Type=='wind-new':
-                        lhs -= self.SP_Duals[sp].prod_limit[g,n,t]*(self.data.Nodes[n].wind_cf[sp_hours[t]]*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
+                        lhs -= Duals.prod_limit[g,n,t]*(self.data.Nodes[n].wind_cf[sp_hours[t]]*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
 
                     if t>0 and self.data.Generators[g].is_thermal:
-                        lhs -= self.SP_Duals[sp].ramp_limit_up[g,n,t]*(self.data.Generators[g].ramp_rate*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
-                        lhs -= self.SP_Duals[sp].ramp_limit_down[g,n,t]*(self.data.Generators[g].ramp_rate*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
+                        lhs -= Duals.ramp_limit_up[g,n,t]*(self.data.Generators[g].ramp_rate*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
+                        lhs -= Duals.ramp_limit_down[g,n,t]*(self.data.Generators[g].ramp_rate*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
         # Balance equation
         if self.Setting['is_copper_plate_approx']:
             for t in range(nT):
                 rhs = 0;
                 [rhs := rhs + self.data.Nodes[n].demand[sp_hours[t]] for n in range(self.data.num_nodes)];
-                lhs -= self.SP_Duals[sp].load_balance[t]*rhs;
+                lhs -= Duals.load_balance[t]*rhs;
         else:
             for n in range(self.data.num_nodes):
                 for t in range(nT):                                
-                    lhs -= self.SP_Duals[sp].load_balance[n,t]*self.data.Nodes[n].demand[sp_hours[t]];
+                    lhs -= Duals.load_balance[n,t]*self.data.Nodes[n].demand[sp_hours[t]];
 
         # flow
         if not self.Setting['is_copper_plate_approx']:
             for l in range(self.data.num_lines):
                 for t in range(nT):
-                    lhs -= self.SP_Duals[sp].flow_limit1[l,t]*self.MP_DV.line_established[l];
-                    lhs -= self.SP_Duals[sp].flow_limit2[l,t]*self.MP_DV.line_established[l];
+                    lhs -= Duals.flow_limit1[l,t]*self.MP_DV.line_established[l];
+                    lhs -= Duals.flow_limit2[l,t]*self.MP_DV.line_established[l];
         
         # storage
         for s in range(self.data.num_storages):                
             for n in range(self.data.num_nodes):
-                lhs -= self.SP_Duals[sp].storage_SOC_balance[n]*(self.MP_DV.storage_level[s,n]/2);
+                lhs -= Duals.storage_SOC_balance[n]*(self.MP_DV.storage_level[s,n]/2);
                 for t in range(nT):
-                    lhs -= self.SP_Duals[sp].storage_charge_limit[n,t]*self.MP_DV.storage_capacity[s,n];
-                    lhs -= self.SP_Duals[sp].storage_discharge_limit[n,t]*self.MP_DV.storage_capacity[s,n];
-                    lhs -= self.SP_Duals[sp].storage_SOC_limit[n,t]*self.MP_DV.storage_level[s,n];    
+                    lhs -= Duals.storage_charge_limit[n,t]*self.MP_DV.storage_capacity[s,n];
+                    lhs -= Duals.storage_discharge_limit[n,t]*self.MP_DV.storage_capacity[s,n];
+                    lhs -= Duals.storage_SOC_limit[n,t]*self.MP_DV.storage_level[s,n];    
         # emissions limit
         if self.Setting['Decarbonization_target'] > 0:
-            lhs -= self.SP_Duals[sp].emissions_limit*self.MP_DV.emissions_per_period[sp];
+            lhs -= Duals.emissions_limit*self.MP_DV.emissions_per_period[sp];
 
 
         self.MP_model.add_linear_constraint(lhs, poi.Geq, 0);
