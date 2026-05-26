@@ -57,7 +57,7 @@ class BD():
         self.MP_model.optimize();
         print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
         Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-        step_RBD = 0;
+        step_RBD = 0; Gap = np.inf;
         # main loop for Step 0
         for iter in range(100):
             self.Cuts.append([[] for _ in range(self.data.num_rep_periods)]);
@@ -84,7 +84,13 @@ class BD():
             self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
             Gap = np.round((self.UB-self.LB)*100/self.UB,1);
             print(f'\t\t\t Iteration {iter}: LB={round(self.LB/1e7)}e7, UB={round(self.UB/1e7)}e7, Gap={Gap}%');
-    
+            # if Gap<1.5:
+            #     total_op_cost = 0;
+            #     for sp in range(self.data.num_rep_periods):
+            #         total_op_cost += self.best_SP_Vals[sp].operational_cost;
+            #         print(f'SP {sp} Objective value: {np.round(self.best_SP_Vals[sp].operational_cost/1e7,1)}e7')
+            #     print(f'total system cost: {self.best_MP_DV_vals.total_investment_cost + total_op_cost}');
+
             if abs(self.UB-self.LB)/self.UB < self.Setting['solver_gap']: # if converged enough
                 print('Convergence achieved!');
                 self.print_best_feasible_solution(step_RBD, start_time, Gap, iter);
@@ -97,12 +103,6 @@ class BD():
 
 
     def print_best_feasible_solution(self, step_RBD, start_time, Gap, nIter):
-        # for sp in range(self.data.num_rep_periods):
-        #     self.build_SP_model(self.best_MP_DV_vals, sp);
-        #     self.SP_model[sp].optimize();
-        #     self.get_SP_DV_dual_vals(sp); # both dual and DV values
-        #     print(f'SP {sp} Objective value: {np.round(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.ObjectiveValue)/1e7,1)}e7, shedding: {round(self.SP_DV_values[sp].load_shedding_cost)}, fuel: {round(self.SP_DV_values[sp].gas_fuel_cost)}, VOM: {round(self.SP_DV_values[sp].VOM_cost)}');
-
         DVo_vals = DV_Classes.Power_System_Operational_Decision_Values();
         Get_Vals.concat_SP_models_values(self.best_SP_Vals, DVo_vals, self.data, self.Setting);
         process = psutil.Process(os.getpid());
@@ -121,7 +121,7 @@ class BD():
             for sp in range(self.data.num_rep_periods):
                 self.best_SP_Vals[sp] = copy.deepcopy(self.SP_DV_values[sp]);
             # self.print_sum_inv_variables(self.best_MP_DV_vals);
-
+          
 
     def print_sum_inv_variables(self, MP_vals):
               # print some of the values
