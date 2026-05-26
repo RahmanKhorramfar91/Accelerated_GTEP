@@ -95,6 +95,8 @@ class BD():
         if not is_LP:
             self.Setting['relax_int_vars'] = False;
             step_RBD = 1;
+            self.LB = 0;
+            self.UB = 600e7;
             self.build_MP_model();
             # add cuts from previous step
             self.add_cuts_from_step0();
@@ -120,7 +122,8 @@ class BD():
                 Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
                 self.MP_model.optimize();
                 Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-            
+                self.print_sum_inv_variables(self.MP_DV_values);
+
                 # update LB, calculate gap
                 self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
                 Gap = np.round((self.UB-self.LB)*100/self.UB,1);
@@ -166,12 +169,12 @@ class BD():
             for n in range(self.data.num_nodes):
                 if MP_vals.gen_operational[g,n] > 0.5:
                     print(f'gen_op[{g},{n}] = {round(MP_vals.gen_operational[g,n])}');
-        for s in range(self.data.num_storages):
-            for n in range(self.data.num_nodes):
-                if MP_vals.storage_level[s,n] > 0.5:
-                    print(f'storage_level[{s},{n}] = {round(MP_vals.storage_level[s,n])}');
-                if MP_vals.storage_capacity[s,n] >0.5:
-                    print(f'storage_capacity[{s},{n}] = {round(MP_vals.storage_capacity[s,n])}');
+        # for s in range(self.data.num_storages):
+        #     for n in range(self.data.num_nodes):
+        #         if MP_vals.storage_level[s,n] > 0.5:
+        #             print(f'storage_level[{s},{n}] = {round(MP_vals.storage_level[s,n])}');
+        #         if MP_vals.storage_capacity[s,n] >0.5:
+        #             print(f'storage_capacity[{s},{n}] = {round(MP_vals.storage_capacity[s,n])}');
         for l in range(self.data.num_lines):
             if MP_vals.line_established[l] > 0.5:
                 print(f'line_established[{l}] = {round(MP_vals.line_established[l])}');
@@ -261,8 +264,8 @@ class BD():
     def build_MP_model(self): 
         if self.Setting['solver']=='gurobi':
             self.MP_model = gurobi.Model();
-            self.MP_model.set_raw_parameter('LogToConsole', self.Setting['show_log_info']);
             self.MP_model.set_raw_parameter('OutputFlag', self.Setting['show_log_info']);
+            self.MP_model.set_raw_parameter('LogToConsole', self.Setting['show_log_info']);            
             if self.Setting['Cross_over_status']==0:                
                 # self.P_model.set_raw_parameter('Presolve', -1);
                 # self.P_model.set_raw_parameter('CrossoverBasis', 0);
@@ -293,8 +296,8 @@ class BD():
         nT = len(sp_hours);
         if self.Setting['solver']=='gurobi':
             self.SP_model[sp] = gurobi.Model();
-            self.SP_model[sp].set_raw_parameter('LogToConsole', self.Setting['show_log_info']);
             self.SP_model[sp].set_raw_parameter('OutputFlag', self.Setting['show_log_info']);
+            self.SP_model[sp].set_raw_parameter('LogToConsole', self.Setting['show_log_info']);            
             if self.Setting['Cross_over_status']==0:
                 # self.P_model.set_raw_parameter('Presolve', -1);
                 # self.P_model.set_raw_parameter('CrossoverBasis', 0);
