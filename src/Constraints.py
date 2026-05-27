@@ -18,7 +18,9 @@ def inv_const_num_operational_generators(Model, DV, data, Setting):
         
     if Setting['is_green_field']:
         for g in range(data.num_generators):
-            for n in range(data.num_nodes):                    
+            for n in range(data.num_nodes):     
+                # if not data.Generators[g].is_thermal:  
+                #     Model.add_linear_constraint(DV.gen_operational[g,n], poi.Eq, 0);
                 Model.add_linear_constraint(DV.gen_operational[g,n]-DV.gen_established[g,n], poi.Eq, 0);
     else:
         pass; # only implemented for green field for now, can add brownfield later if needed
@@ -123,8 +125,8 @@ def oper_const_ramping(Model, DVi, DVo, DVi_vals, Con, nT, data, Setting):
             if data.Generators[g].is_thermal:
                 for n in range(data.num_nodes):
                     for t in range(1, nT):
-                        Con.ramp_limit_up[g,n,t] = Model.add_linear_constraint(DVo.generation[g,n,t]-DVo.generation[g,n,t-1]-data.Generators[g].ramp_rate*data.Generators[g].nameplate_capacity*DVi_vals.gen_operational[g,n], poi.Leq, 0);
-                        Con.ramp_limit_down[g,n,t] = Model.add_linear_constraint(-DVo.generation[g,n,t]+DVo.generation[g,n,t-1]-data.Generators[g].ramp_rate*data.Generators[g].nameplate_capacity*DVi.gen_operational[g,n], poi.Leq, 0);
+                        Con.ramp_limit_up[g,n,t] = Model.add_linear_constraint(DVo.generation[g,n,t]-DVo.generation[g,n,t-1], poi.Leq, data.Generators[g].ramp_rate*data.Generators[g].nameplate_capacity*DVi_vals.gen_operational[g,n]);
+                        Con.ramp_limit_down[g,n,t] = Model.add_linear_constraint(-DVo.generation[g,n,t]+DVo.generation[g,n,t-1], poi.Leq, data.Generators[g].ramp_rate*data.Generators[g].nameplate_capacity*DVi_vals.gen_operational[g,n]);
 
 
 def oper_const_balance_equation(Model, DV, Con, sp_hours, data, Setting):
@@ -175,11 +177,11 @@ def oper_const_flow_limits(Model, DVi, DVo, DVi_vals, Con, nT, data, Setting):
             for l in range(data.num_lines):
                 for t in range(nT):
                     if data.Lines[l].is_existing:
-                        Con.flow_limit1[l,t]= Model.add_linear_constraint(DVo.flow[l,t]-data.Lines[l].capacity-DVi_vals.line_established[l], poi.Leq, 0);
-                        Con.flow_limit2[l,t]= Model.add_linear_constraint(-DVo.flow[l,t]-data.Lines[l].capacity-DVi_vals.line_established[l], poi.Leq, 0);
+                        Con.flow_limit1[l,t]= Model.add_linear_constraint(DVo.flow[l,t], poi.Leq, data.Lines[l].capacity-DVi_vals.line_established[l]);
+                        Con.flow_limit2[l,t]= Model.add_linear_constraint(-DVo.flow[l,t], poi.Leq, data.Lines[l].capacity-DVi_vals.line_established[l]);
                     else:
-                        Con.flow_limit1[l,t]= Model.add_linear_constraint(DVo.flow[l,t]-DVi_vals.line_established[l], poi.Leq, 0);
-                        Con.flow_limit2[l,t]= Model.add_linear_constraint(-DVo.flow[l,t]-DVi_vals.line_established[l], poi.Leq, 0);
+                        Con.flow_limit1[l,t]= Model.add_linear_constraint(DVo.flow[l,t], poi.Leq, DVi_vals.line_established[l]);
+                        Con.flow_limit2[l,t]= Model.add_linear_constraint(-DVo.flow[l,t], poi.Leq, DVi_vals.line_established[l]);
 
 
 def oper_const_RPS(Model, DVi, DVo, data, Setting):

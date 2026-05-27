@@ -60,7 +60,8 @@ class BD():
         print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
         Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
         Gap = np.inf;
-        MaxIter=100; IterCount = -1;
+        MaxIter= 100; 
+        IterCount = -1;
         # main loop for Step 0
         while True:
             IterCount += 1;
@@ -80,7 +81,7 @@ class BD():
             Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
             self.MP_model.optimize();
             Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-        
+            # self.print_sum_inv_variables(self.MP_DV_values);
             # update LB, calculate gap
             self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
             Gap = np.round((self.UB-self.LB)*100/self.UB,1);
@@ -92,7 +93,8 @@ class BD():
             else:
                 # solve regulaized MP, get new inv values
                 self.solve_regularized_MP();
-            if IterCount>MaxIter:
+            
+            if IterCount == MaxIter:
                 print(f'maximum iteration attained! ');
                 self.print_best_feasible_solution(step_RBD, start_time, Gap, IterCount);
                 break;
@@ -172,17 +174,17 @@ class BD():
               # print some of the values
         for g in range(self.data.num_generators):
             for n in range(self.data.num_nodes):
-                if MP_vals.gen_operational[g,n] > 0.5:
-                    print(f'gen_op[{g},{n}] = {round(MP_vals.gen_operational[g,n])}');
+                if MP_vals.gen_operational[g,n] > 0.1:
+                    print(f'gen_op[{g},{n}] = {(MP_vals.gen_operational[g,n])}');
         for s in range(self.data.num_storages):
             for n in range(self.data.num_nodes):
-                if MP_vals.storage_level[s,n] > 0.5:
-                    print(f'storage_level[{s},{n}] = {round(MP_vals.storage_level[s,n])}');
-                if MP_vals.storage_capacity[s,n] >0.5:
-                    print(f'storage_capacity[{s},{n}] = {round(MP_vals.storage_capacity[s,n])}');
+                if MP_vals.storage_level[s,n] > 0.1:
+                    print(f'storage_level[{s},{n}] = {(MP_vals.storage_level[s,n])}');
+                if MP_vals.storage_capacity[s,n] >0.1:
+                    print(f'storage_capacity[{s},{n}] = {(MP_vals.storage_capacity[s,n])}');
         for l in range(self.data.num_lines):
-            if MP_vals.line_established[l] > 0.5:
-                print(f'line_established[{l}] = {round(MP_vals.line_established[l])}');
+            if MP_vals.line_established[l] > 0.1:
+                print(f'line_established[{l}] = {(MP_vals.line_established[l])}');
         print(f'total SP cost {sum(MP_vals.theta[i] for i in range(self.data.num_rep_periods))}');
 
         for d in range(self.data.num_rep_periods):
@@ -262,7 +264,7 @@ class BD():
 
 
         self.MP_model.add_linear_constraint(lhs, poi.Geq, 0);
-        # Model.cb_add_lazy_constraint(lhs, poi.Geq, 0);
+       
 
 
 
