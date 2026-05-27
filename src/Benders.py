@@ -26,6 +26,7 @@ import src.Objective_Function as Objective_Function;
 import src.Get_Vals as Get_Vals;
 import src.Print_Outcomes as Print_Outcomes;
 import psutil, os;  # for memory usage
+import concurrent.futures;
 import copy;
 
 
@@ -49,6 +50,12 @@ class BD():
         self.LB = 0;
         self.UB = 1e15;
     
+    def solve_SP_instance(self, sp):
+        self.build_SP_model(self.MP_DV_values, sp);
+        self.SP_model[sp].optimize();
+        self.get_SP_DV_dual_vals(sp); # both dual and DV values
+        return sp, self.SP_Duals[sp]
+
     def run_Benders(self):
         start_time = time.time()
         is_LP = self.Setting['relax_int_vars']; 
@@ -66,13 +73,13 @@ class BD():
         while True:
             IterCount += 1;
             self.Cuts.append([[] for _ in range(self.data.num_rep_periods)]);
-            for sp in range(self.data.num_rep_periods):
-                self.build_SP_model(self.MP_DV_values, sp);
-                self.SP_model[sp].optimize();
-                self.get_SP_DV_dual_vals(sp); # both dual and DV values
-                # print(f'SP {sp} Objective value: {np.round(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.ObjectiveValue)/1e7,1)}e7, shedding: {round(self.SP_DV_values[sp].load_shedding_cost)}, fuel: {round(self.SP_DV_values[sp].gas_fuel_cost)}, VOM: {round(self.SP_DV_values[sp].VOM_cost)}');                    
-                self.Cuts[IterCount][sp] = self.SP_Duals[sp]; # record the cuts
-                self.add_optimality_cut_to_MP_model(sp, self.SP_Duals[sp]);
+            max_workers = min(self.data.num_rep_periods, os.cpu_count() or 1)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(self.solve_SP_instance, sp) for sp in range(self.data.num_rep_periods)]
+                for future in concurrent.futures.as_completed(futures):
+                    sp, duals = future.result()
+                    self.Cuts[IterCount][sp] = duals; # record the cuts
+                    self.add_optimality_cut_to_MP_model(sp, duals);
             
             # update UB and the best inv decisions
             self.update_UB_and_best_investment_values();
@@ -117,13 +124,13 @@ class BD():
             while True:
                 IterCount += 1;
                 self.Cuts.append([[] for _ in range(self.data.num_rep_periods)]);
-                for sp in range(self.data.num_rep_periods):
-                    self.build_SP_model(self.MP_DV_values, sp);
-                    self.SP_model[sp].optimize();
-                    self.get_SP_DV_dual_vals(sp); # both dual and DV values
-                    # print(f'SP {sp} Objective value: {np.round(self.SP_model[sp].get_model_attribute(poi.ModelAttribute.ObjectiveValue)/1e7,1)}e7, shedding: {round(self.SP_DV_values[sp].load_shedding_cost)}, fuel: {round(self.SP_DV_values[sp].gas_fuel_cost)}, VOM: {round(self.SP_DV_values[sp].VOM_cost)}');                    
-                    self.Cuts[IterCount][sp] = self.SP_Duals[sp]; # record the cuts
-                    self.add_optimality_cut_to_MP_model(sp, self.SP_Duals[sp]);
+                max_workers = min(self.data.num_rep_periods, os.cpu_count() or 1)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(self.solve_SP_instance, sp) for sp in range(self.data.num_rep_periods)]
+                    for future in concurrent.futures.as_completed(futures):
+                        sp, duals = future.result()
+                        self.Cuts[IterCount][sp] = duals; # record the cuts
+                        self.add_optimality_cut_to_MP_model(sp, duals);
                 
                 # update UB and the best inv decisions
                 self.update_UB_and_best_investment_values();
