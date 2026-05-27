@@ -1,9 +1,12 @@
 '''
 Bismillah
-May 18, 2026 at 19:37, Cambriedge home
-implmentation of Regularized Benders from:
+May 27, 2026 at 1:09am, Cambriedge home
+implmentation of Regularized Benders dual decomposition. 
 
+The Benders dual decomposition is introduced at:
+Rahmaniani, R., Ahmed, S., Crainic, T. G., Gendreau, M., & Rei, W. (2020). The Benders dual decomposition method. Operations Research, 68(3), 878-895.
 
+which is adopted as part of the regularized BD in the following paper:
 "Pecci, F., & Jenkins, J. D. (2025). 
 Regularized benders decomposition for high performance capacity expansion models. 
 IEEE Transactions on Power Systems, 40(4), 3105-3116."
