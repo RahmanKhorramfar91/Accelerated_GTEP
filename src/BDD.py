@@ -1,14 +1,14 @@
 '''
 Bismillah
 May 27, 2026 at 1:09am, Cambridge home
-Implementation of the BDD1 strengthened Benders cuts from:
+Paper-style implementation of the BDD1 strengthened Benders cuts from:
 
 Rahmaniani, R., Ahmed, S., Crainic, T. G., Gendreau, M., & Rei, W. (2020).
 The Benders dual decomposition method. Operations Research, 68(3), 878-895.
 
-BDD1 keeps the existing GTEP Benders loop, solves the classical LP
-subproblem to obtain the Benders subgradient, then solves a local-copy
-subproblem and adds the strengthened optimality cut.
+The implementation explicitly builds the local-copy subproblem with z = y*
+linking constraints to obtain the equality multipliers, then relaxes/prices
+those linking constraints to generate a strengthened Benders cut.
 
 @author: Rahman Khorramfar
 '''
@@ -27,40 +27,74 @@ import src.Objective_Function as Objective_Function
 
 
 class BDD1_Cut:
-    def __init__(self, sp, duals, local_vals, strengthened_operational_cost, fallback=False):
+    def __init__(self, sp, multipliers, local_vals, operational_cost, fallback=False):
         self.sp = sp
-        self.duals = duals
+        self.multipliers = multipliers
         self.local_vals = local_vals
-        self.strengthened_operational_cost = strengthened_operational_cost
+        self.operational_cost = operational_cost
         self.fallback = fallback
+
+
+class Investment_Copy_Multipliers:
+    def __init__(self, data):
+        self.gen_established = np.zeros((data.num_generators, data.num_nodes))
+        self.gen_operational = np.zeros((data.num_generators, data.num_nodes))
+        self.storage_capacity = np.zeros((data.num_storages, data.num_nodes))
+        self.storage_level = np.zeros((data.num_storages, data.num_nodes))
+        self.line_established = np.zeros(data.num_lines)
+        self.emissions_per_period = np.zeros(data.num_rep_periods)
+
+
+class Investment_Copy_Links:
+    def __init__(self, data):
+        self.gen_established = np.empty((data.num_generators, data.num_nodes), dtype=object)
+        self.gen_operational = np.empty((data.num_generators, data.num_nodes), dtype=object)
+        self.storage_capacity = np.empty((data.num_storages, data.num_nodes), dtype=object)
+        self.storage_level = np.empty((data.num_storages, data.num_nodes), dtype=object)
+        self.line_established = np.empty(data.num_lines, dtype=object)
+        self.emissions_per_period = np.empty(data.num_rep_periods, dtype=object)
 
 
 class BD(Classical_Benders.BD):
     def solve_SP_instance(self, sp):
-        self.build_SP_model(self.MP_DV_values, sp)
-        self.SP_model[sp].optimize()
-        self.get_SP_DV_dual_vals(sp)
-
         try:
-            cut = self.solve_strengthened_SP_instance(sp, self.SP_Duals[sp])
+            fixed_model, fixed_DV, fixed_DVo, fixed_links, sp_hours = self.build_fixed_copy_SP_model(sp)
+            fixed_model.optimize()
+
+            nT = len(sp_hours)
+            Get_Vals.get_operational_variable_values(fixed_model, fixed_DVo, self.SP_DV_values[sp], nT, self.data)
+            multipliers = self.get_copy_link_duals(fixed_model, fixed_links)
+            cut = self.solve_strengthened_SP_instance(sp, multipliers)
         except Exception as exc:
             if not self.Setting.get('BDD1_fallback_to_classical', True):
                 raise
             if self.Setting.get('BDD1_show_strengthening_log', True):
-                print(f'\t\t BDD1 fallback to classical cut for SP {sp}: {exc}')
-            cut = BDD1_Cut(sp, self.SP_Duals[sp], None, None, fallback=True)
+                print(f'\t\t BDD1 fallback to inherited classical cut for SP {sp}: {exc}')
+            self.build_SP_model(self.MP_DV_values, sp)
+            self.SP_model[sp].optimize()
+            self.get_SP_DV_dual_vals(sp)
+            return sp, self.SP_Duals[sp]
+
         return sp, cut
 
     def add_optimality_cut_to_MP_model(self, sp, Cut):
-        if isinstance(Cut, BDD1_Cut) and not Cut.fallback:
-            self.add_strengthened_optimality_cut_to_MP_model(sp, Cut)
-        elif isinstance(Cut, BDD1_Cut):
-            super().add_optimality_cut_to_MP_model(sp, Cut.duals)
+        if isinstance(Cut, BDD1_Cut):
+            self.add_bdd1_cut_to_MP_model(sp, Cut)
         else:
             super().add_optimality_cut_to_MP_model(sp, Cut)
 
-    def solve_strengthened_SP_instance(self, sp, Duals):
-        model, local_DV, local_DVo, local_con, sp_hours, sp_hours_weights = self.build_strengthened_SP_model(sp, Duals)
+    def build_fixed_copy_SP_model(self, sp):
+        model, local_DV, local_DVo, local_con, sp_hours, sp_hours_weights = self.build_local_copy_SP_model(sp, relax_copy_integrality=True)
+        links = self.add_copy_link_constraints(model, local_DV)
+        model.set_objective(local_DVo.operational_cost, poi.ObjectiveSense.Minimize)
+        return model, local_DV, local_DVo, links, sp_hours
+
+    def solve_strengthened_SP_instance(self, sp, multipliers):
+        model, local_DV, local_DVo, local_con, sp_hours, sp_hours_weights = self.build_local_copy_SP_model(sp, relax_copy_integrality=False)
+        model.set_objective(
+            local_DVo.operational_cost - self.copy_multiplier_expr(multipliers, local_DV),
+            poi.ObjectiveSense.Minimize
+        )
         model.optimize()
 
         local_oper_vals = DV_Classes.Power_System_Operational_Decision_Values()
@@ -70,14 +104,14 @@ class BD(Classical_Benders.BD):
         self.get_local_copy_values(model, local_DV, local_inv_vals)
 
         if self.Setting.get('BDD1_show_strengthening_log', True):
-            classical_obj = self.SP_DV_values[sp].operational_cost
-            strengthened_rhs = local_oper_vals.operational_cost + self.dual_weighted_master_value(sp, Duals, self.MP_DV_values) - self.dual_weighted_master_value(sp, Duals, local_inv_vals)
-            lift = strengthened_rhs - classical_obj
-            print(f'\t\t BDD1 SP {sp}: classical={round(classical_obj, 2)}, strengthened_rhs={round(strengthened_rhs, 2)}, lift={round(lift, 2)}')
+            fixed_obj = self.SP_DV_values[sp].operational_cost
+            strengthened_rhs = local_oper_vals.operational_cost + self.copy_multiplier_value(multipliers, self.MP_DV_values) - self.copy_multiplier_value(multipliers, local_inv_vals)
+            lift = strengthened_rhs - fixed_obj
+            print(f'\t\t BDD1 SP {sp}: fixed-copy={round(fixed_obj, 2)}, strengthened_rhs={round(strengthened_rhs, 2)}, lift={round(lift, 2)}')
 
-        return BDD1_Cut(sp, Duals, local_inv_vals, local_oper_vals.operational_cost)
+        return BDD1_Cut(sp, multipliers, local_inv_vals, local_oper_vals.operational_cost)
 
-    def build_strengthened_SP_model(self, sp, Duals):
+    def build_local_copy_SP_model(self, sp, relax_copy_integrality):
         slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period'])
         sp_hours = self.data.rep_hours[slice1]
         sp_hours_weights = self.data.rep_hours_weights[slice1]
@@ -88,7 +122,7 @@ class BD(Classical_Benders.BD):
 
         local_setting = copy.copy(self.Setting)
         local_setting['solution_method'] = 'extensive_form'
-        local_setting['relax_int_vars'] = False
+        local_setting['relax_int_vars'] = relax_copy_integrality
 
         local_DV = DV_Classes.Power_System_Investment_Decision_Variables()
         local_DVo = DV_Classes.Power_System_Operational_Decision_Variables()
@@ -111,24 +145,60 @@ class BD(Classical_Benders.BD):
         self.add_local_emissions_constraint(model, local_DV, local_DVo, sp, sp_hours_weights, local_con)
         Constraints.oper_const_storage(model, local_DV, local_DVo, None, local_con, nT, self.data, local_setting)
 
-        model.set_objective(
-            local_DVo.operational_cost - self.dual_weighted_master_expr(sp, Duals, local_DV),
-            poi.ObjectiveSense.Minimize
-        )
         return model, local_DV, local_DVo, local_con, sp_hours, sp_hours_weights
 
-    def add_strengthened_optimality_cut_to_MP_model(self, sp, Cut):
+    def add_copy_link_constraints(self, model, DV):
+        links = Investment_Copy_Links(self.data)
+        for g in range(self.data.num_generators):
+            for n in range(self.data.num_nodes):
+                links.gen_established[g, n] = model.add_linear_constraint(DV.gen_established[g, n], poi.Eq, self.MP_DV_values.gen_established[g, n])
+                links.gen_operational[g, n] = model.add_linear_constraint(DV.gen_operational[g, n], poi.Eq, self.MP_DV_values.gen_operational[g, n])
+
+        for s in range(self.data.num_storages):
+            for n in range(self.data.num_nodes):
+                links.storage_capacity[s, n] = model.add_linear_constraint(DV.storage_capacity[s, n], poi.Eq, self.MP_DV_values.storage_capacity[s, n])
+                links.storage_level[s, n] = model.add_linear_constraint(DV.storage_level[s, n], poi.Eq, self.MP_DV_values.storage_level[s, n])
+
+        for l in range(self.data.num_lines):
+            links.line_established[l] = model.add_linear_constraint(DV.line_established[l], poi.Eq, self.MP_DV_values.line_established[l])
+
+        for d in range(self.data.num_rep_periods):
+            links.emissions_per_period[d] = model.add_linear_constraint(DV.emissions_per_period[d], poi.Eq, self.MP_DV_values.emissions_per_period[d])
+
+        return links
+
+    def get_copy_link_duals(self, model, links):
+        multipliers = Investment_Copy_Multipliers(self.data)
+        for g in range(self.data.num_generators):
+            for n in range(self.data.num_nodes):
+                multipliers.gen_established[g, n] = model.get_constraint_attribute(links.gen_established[g, n], poi.ConstraintAttribute.Dual)
+                multipliers.gen_operational[g, n] = model.get_constraint_attribute(links.gen_operational[g, n], poi.ConstraintAttribute.Dual)
+
+        for s in range(self.data.num_storages):
+            for n in range(self.data.num_nodes):
+                multipliers.storage_capacity[s, n] = model.get_constraint_attribute(links.storage_capacity[s, n], poi.ConstraintAttribute.Dual)
+                multipliers.storage_level[s, n] = model.get_constraint_attribute(links.storage_level[s, n], poi.ConstraintAttribute.Dual)
+
+        for l in range(self.data.num_lines):
+            multipliers.line_established[l] = model.get_constraint_attribute(links.line_established[l], poi.ConstraintAttribute.Dual)
+
+        for d in range(self.data.num_rep_periods):
+            multipliers.emissions_per_period[d] = model.get_constraint_attribute(links.emissions_per_period[d], poi.ConstraintAttribute.Dual)
+
+        return multipliers
+
+    def add_bdd1_cut_to_MP_model(self, sp, Cut):
         lhs = poi.ExprBuilder()
         lhs += self.MP_DV.theta[sp]
-        lhs -= self.dual_weighted_master_expr(sp, Cut.duals, self.MP_DV)
-        lhs += self.dual_weighted_master_value(sp, Cut.duals, Cut.local_vals)
-        lhs -= Cut.strengthened_operational_cost
+        lhs -= self.copy_multiplier_expr(Cut.multipliers, self.MP_DV)
+        lhs += self.copy_multiplier_value(Cut.multipliers, Cut.local_vals)
+        lhs -= Cut.operational_cost
         self.MP_model.add_linear_constraint(lhs, poi.Geq, 0)
 
         if self.Setting.get('BDD1_show_strengthening_log', True):
-            current_rhs = Cut.strengthened_operational_cost + self.dual_weighted_master_value(sp, Cut.duals, self.MP_DV_values) - self.dual_weighted_master_value(sp, Cut.duals, Cut.local_vals)
-            classical_rhs = self.SP_DV_values[sp].operational_cost
-            print(f'\t\t BDD1 cut check SP {sp}: rhs@current={round(current_rhs, 2)}, classical={round(classical_rhs, 2)}')
+            current_rhs = Cut.operational_cost + self.copy_multiplier_value(Cut.multipliers, self.MP_DV_values) - self.copy_multiplier_value(Cut.multipliers, Cut.local_vals)
+            fixed_rhs = self.SP_DV_values[sp].operational_cost
+            print(f'\t\t BDD1 cut check SP {sp}: rhs@current={round(current_rhs, 2)}, fixed-copy={round(fixed_rhs, 2)}')
 
     def create_solver_model(self):
         if self.Setting['solver'] == 'gurobi':
@@ -170,78 +240,42 @@ class BD(Classical_Benders.BD):
         DV_values.line_established = np.array([max(0, model.get_value(DV.line_established[l])) for l in range(self.data.num_lines)])
         DV_values.emissions_per_period = np.array([max(0, model.get_value(DV.emissions_per_period[d])) for d in range(self.data.num_rep_periods)])
 
-    def dual_weighted_master_expr(self, sp, Duals, DV):
-        slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period'])
-        sp_hours = self.data.rep_hours[slice1]
-        nT = len(sp_hours)
-
+    def copy_multiplier_expr(self, multipliers, DV):
         expr = poi.ExprBuilder()
         for g in range(self.data.num_generators):
             for n in range(self.data.num_nodes):
-                for t in range(nT):
-                    if self.data.Generators[g].is_thermal:
-                        expr += Duals.prod_limit[g, n, t] * self.data.Generators[g].nameplate_capacity * DV.gen_operational[g, n]
-                    elif self.data.Generators[g].Type == 'solar-UPV':
-                        expr += Duals.prod_limit[g, n, t] * self.data.Nodes[n].solar_cf[sp_hours[t]] * self.data.Generators[g].nameplate_capacity * DV.gen_operational[g, n]
-                    elif self.data.Generators[g].Type == 'wind-new':
-                        expr += Duals.prod_limit[g, n, t] * self.data.Nodes[n].wind_cf[sp_hours[t]] * self.data.Generators[g].nameplate_capacity * DV.gen_operational[g, n]
-
-                    if t > 0 and self.data.Generators[g].is_thermal:
-                        expr += Duals.ramp_limit_up[g, n, t] * self.data.Generators[g].ramp_rate * self.data.Generators[g].nameplate_capacity * DV.gen_operational[g, n]
-                        expr += Duals.ramp_limit_down[g, n, t] * self.data.Generators[g].ramp_rate * self.data.Generators[g].nameplate_capacity * DV.gen_operational[g, n]
-
-        if not self.Setting['is_copper_plate_approx']:
-            for l in range(self.data.num_lines):
-                for t in range(nT):
-                    expr += Duals.flow_limit1[l, t] * DV.line_established[l]
-                    expr += Duals.flow_limit2[l, t] * DV.line_established[l]
+                expr += multipliers.gen_established[g, n] * DV.gen_established[g, n]
+                expr += multipliers.gen_operational[g, n] * DV.gen_operational[g, n]
 
         for s in range(self.data.num_storages):
             for n in range(self.data.num_nodes):
-                expr += Duals.storage_SOC_balance[n] * DV.storage_level[s, n] / 2
-                for t in range(nT):
-                    expr += Duals.storage_charge_limit[n, t] * DV.storage_capacity[s, n]
-                    expr += Duals.storage_discharge_limit[n, t] * DV.storage_capacity[s, n]
-                    expr += Duals.storage_SOC_limit[n, t] * DV.storage_level[s, n]
+                expr += multipliers.storage_capacity[s, n] * DV.storage_capacity[s, n]
+                expr += multipliers.storage_level[s, n] * DV.storage_level[s, n]
 
-        if self.Setting['Decarbonization_target'] > 0:
-            expr += Duals.emissions_limit * DV.emissions_per_period[sp]
+        for l in range(self.data.num_lines):
+            expr += multipliers.line_established[l] * DV.line_established[l]
+
+        for d in range(self.data.num_rep_periods):
+            expr += multipliers.emissions_per_period[d] * DV.emissions_per_period[d]
+
         return expr
 
-    def dual_weighted_master_value(self, sp, Duals, DV_values):
-        slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period'])
-        sp_hours = self.data.rep_hours[slice1]
-        nT = len(sp_hours)
+    def copy_multiplier_value(self, multipliers, DV_values):
         val = 0
-
         for g in range(self.data.num_generators):
             for n in range(self.data.num_nodes):
-                for t in range(nT):
-                    if self.data.Generators[g].is_thermal:
-                        val += Duals.prod_limit[g, n, t] * self.data.Generators[g].nameplate_capacity * DV_values.gen_operational[g, n]
-                    elif self.data.Generators[g].Type == 'solar-UPV':
-                        val += Duals.prod_limit[g, n, t] * self.data.Nodes[n].solar_cf[sp_hours[t]] * self.data.Generators[g].nameplate_capacity * DV_values.gen_operational[g, n]
-                    elif self.data.Generators[g].Type == 'wind-new':
-                        val += Duals.prod_limit[g, n, t] * self.data.Nodes[n].wind_cf[sp_hours[t]] * self.data.Generators[g].nameplate_capacity * DV_values.gen_operational[g, n]
-
-                    if t > 0 and self.data.Generators[g].is_thermal:
-                        val += Duals.ramp_limit_up[g, n, t] * self.data.Generators[g].ramp_rate * self.data.Generators[g].nameplate_capacity * DV_values.gen_operational[g, n]
-                        val += Duals.ramp_limit_down[g, n, t] * self.data.Generators[g].ramp_rate * self.data.Generators[g].nameplate_capacity * DV_values.gen_operational[g, n]
-
-        if not self.Setting['is_copper_plate_approx']:
-            for l in range(self.data.num_lines):
-                for t in range(nT):
-                    val += Duals.flow_limit1[l, t] * DV_values.line_established[l]
-                    val += Duals.flow_limit2[l, t] * DV_values.line_established[l]
+                val += multipliers.gen_established[g, n] * DV_values.gen_established[g, n]
+                val += multipliers.gen_operational[g, n] * DV_values.gen_operational[g, n]
 
         for s in range(self.data.num_storages):
             for n in range(self.data.num_nodes):
-                val += Duals.storage_SOC_balance[n] * DV_values.storage_level[s, n] / 2
-                for t in range(nT):
-                    val += Duals.storage_charge_limit[n, t] * DV_values.storage_capacity[s, n]
-                    val += Duals.storage_discharge_limit[n, t] * DV_values.storage_capacity[s, n]
-                    val += Duals.storage_SOC_limit[n, t] * DV_values.storage_level[s, n]
+                val += multipliers.storage_capacity[s, n] * DV_values.storage_capacity[s, n]
+                val += multipliers.storage_level[s, n] * DV_values.storage_level[s, n]
 
-        if self.Setting['Decarbonization_target'] > 0:
-            val += Duals.emissions_limit * DV_values.emissions_per_period[sp]
+        for l in range(self.data.num_lines):
+            val += multipliers.line_established[l] * DV_values.line_established[l]
+
+        for d in range(self.data.num_rep_periods):
+            val += multipliers.emissions_per_period[d] * DV_values.emissions_per_period[d]
+
         return val
