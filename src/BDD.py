@@ -1,368 +1,247 @@
 '''
 Bismillah
-May 27, 2026 at 1:09am, Cambriedge home
-implmentation of Regularized Benders dual decomposition. 
+May 27, 2026 at 1:09am, Cambridge home
+Implementation of the BDD1 strengthened Benders cuts from:
 
-The Benders dual decomposition is introduced at:
-Rahmaniani, R., Ahmed, S., Crainic, T. G., Gendreau, M., & Rei, W. (2020). The Benders dual decomposition method. Operations Research, 68(3), 878-895.
+Rahmaniani, R., Ahmed, S., Crainic, T. G., Gendreau, M., & Rei, W. (2020).
+The Benders dual decomposition method. Operations Research, 68(3), 878-895.
 
-which is adopted as part of the regularized BD in the following paper:
-"Pecci, F., & Jenkins, J. D. (2025). 
-Regularized benders decomposition for high performance capacity expansion models. 
-IEEE Transactions on Power Systems, 40(4), 3105-3116."
-
-The algorithm has two steps: 1) solve relaxed problem and get many optimality cuts
-2) consider the decomposed original problem, add optimality custs from step 1, and continue the BD. 
-Note that optimality cuts from Step 1 do not eliminate any integer solutions
+BDD1 keeps the existing GTEP Benders loop, solves the classical LP
+subproblem to obtain the Benders subgradient, then solves a local-copy
+subproblem and adds the strengthened optimality cut.
 
 @author: Rahman Khorramfar
 '''
-import numpy as np;
-import time; 
-import pyoptinterface as poi;
-from pyoptinterface import gurobi;
-from pyoptinterface import highs;
-import src.DV_Classes as DV_Classes;
-import src.Define_DVs as Define_DVs;
-import src.Constraints as Constraints;
-import src.Objective_Function as Objective_Function;
-import src.Get_Vals as Get_Vals;
-import src.Print_Outcomes as Print_Outcomes;
-import psutil, os;  # for memory usage
-import concurrent.futures;
-import copy;
+import copy
+import numpy as np
+import pyoptinterface as poi
+from pyoptinterface import gurobi
+from pyoptinterface import highs
+
+import src.Benders as Classical_Benders
+import src.Constraints as Constraints
+import src.DV_Classes as DV_Classes
+import src.Define_DVs as Define_DVs
+import src.Get_Vals as Get_Vals
+import src.Objective_Function as Objective_Function
 
 
-class BD():
-    def __init__(self, data, Setting):
-        self.data = data;
-        self.Setting = Setting;
-        self.MP_DV = DV_Classes.Power_System_Investment_Decision_Variables();
-        self.MP_DV_values = DV_Classes.Power_System_Investment_Decision_Values();
-        self.MP_model = [];
-        self.best_MP_DV_vals = DV_Classes.Power_System_Investment_Decision_Values();  # record best inv decisions when updating the UB
-
-        self.SP_DV = [DV_Classes.Power_System_Operational_Decision_Variables() for _ in range(self.data.num_rep_periods)];
-        self.SP_Duals = [DV_Classes.Dual_vals(data) for _ in range(self.data.num_rep_periods)];
-        self.SP_DV_values = [DV_Classes.Power_System_Operational_Decision_Values() for _ in range(self.data.num_rep_periods)];
-        self.SP_Con = [DV_Classes.Oper_Constraints_Names(data) for _ in range(self.data.num_rep_periods)];
-        self.best_SP_Vals = [DV_Classes.Power_System_Operational_Decision_Values() for _ in range(self.data.num_rep_periods)];
-        self.Cuts = [];
-        
-        self.SP_model = [None for _ in range(self.data.num_rep_periods)];
-        self.LB = 0;
-        self.UB = 1e15;
-    
+class BDD1_Cut:
+    def __init__(self, sp, duals, local_vals, strengthened_operational_cost, fallback=False):
+        self.sp = sp
+        self.duals = duals
+        self.local_vals = local_vals
+        self.strengthened_operational_cost = strengthened_operational_cost
+        self.fallback = fallback
 
 
-    def run_Benders(self):
-        start_time = time.time()
-        is_LP = self.Setting['relax_int_vars']; 
-        self.Setting['relax_int_vars'] = True;       
-        step_RBD = 0;
-        self.build_MP_model();
-        
-        self.MP_model.optimize();
-        print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
-        Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-        Gap = np.inf;
-        MaxIter= 100; 
-        IterCount = -1;
-        # main loop for Step 0
-        while True:
-            IterCount += 1;
-            self.Cuts.append([[] for _ in range(self.data.num_rep_periods)]);
-
-            # solve SPs in parallel
-            max_workers = min(self.data.num_rep_periods, os.cpu_count() or 1)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(self.solve_SP_instance, sp) for sp in range(self.data.num_rep_periods)]
-                for future in concurrent.futures.as_completed(futures):
-                    sp, duals = future.result()
-                    self.Cuts[IterCount][sp] = duals; # record the cuts
-                    self.add_optimality_cut_to_MP_model(sp, duals);
-            
-            # update UB and the best inv decisions
-            self.update_UB_and_best_investment_values();
-        
-            # set the objective (changes in the regulaized problem) and re-solve MP, get inv values
-            Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
-            self.MP_model.optimize();
-            Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-            # self.print_sum_inv_variables(self.MP_DV_values);
-            # update LB, calculate gap
-            self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
-            Gap = np.round(abs(self.UB-self.LB)*100/self.UB,1);
-            print(f'\t\t\t Iteration {IterCount}: LB={round(self.LB/1e7)}e7, UB={round(self.UB/1e7)}e7, Gap={Gap}%');
-            if abs(self.UB-self.LB)/self.UB < self.Setting['solver_gap']: # if converged enough
-                print('Convergence achieved!');
-                self.print_best_feasible_solution(step_RBD, start_time, Gap, IterCount);
-                break;
-            else:
-                # solve regulaized MP, get new inv values
-                self.solve_regularized_MP();
-            
-            if IterCount == MaxIter:
-                print(f'maximum iteration attained! ');
-                self.print_best_feasible_solution(step_RBD, start_time, Gap, IterCount);
-                break;
-        
-        if not is_LP:
-            print('Starting Step 2\n');
-            self.Setting['relax_int_vars'] = False;
-            step_RBD = 1;
-            self.LB = 0;
-            self.UB = 1e15;
-            self.build_MP_model();
-            # add cuts from previous step
-            self.add_cuts_from_step0();
-            self.MP_model.optimize();
-            print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
-            Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);                        
-            MaxIter= 200; 
-            IterCount = -1;
-            # main loop for Step 0
-            while True:
-                IterCount += 1;
-                self.Cuts.append([[] for _ in range(self.data.num_rep_periods)]);
-                max_workers = min(self.data.num_rep_periods, os.cpu_count() or 1)
-                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = [executor.submit(self.solve_SP_instance, sp) for sp in range(self.data.num_rep_periods)]
-                    for future in concurrent.futures.as_completed(futures):
-                        sp, duals = future.result()
-                        self.Cuts[IterCount][sp] = duals; # record the cuts
-                        self.add_optimality_cut_to_MP_model(sp, duals);
-                
-                # update UB and the best inv decisions
-                self.update_UB_and_best_investment_values();
-            
-                # set the objective (changes in the regulaized problem) and re-solve MP, get inv values
-                Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
-                self.MP_model.optimize();
-                Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-                # self.print_sum_inv_variables(self.MP_DV_values);
-                # update LB, calculate gap
-                self.LB = self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue);
-                Gap = np.round((self.UB-self.LB)*100/self.UB,1);
-                print(f'\t\t\t Iteration {IterCount}: LB={round(self.LB/1e7)}e7, UB={round(self.UB/1e7)}e7, Gap={Gap}%');
-                if abs(self.UB-self.LB)/self.UB < self.Setting['solver_gap']: # if converged enough
-                    print('Convergence achieved!');
-                    self.print_best_feasible_solution(step_RBD, start_time, Gap, IterCount);
-                    break;
-                else:
-                    # solve regulaized MP, get new inv values
-                    self.solve_regularized_MP();
-                
-                if IterCount == MaxIter:
-                    print(f'maximum iteration attained! ');
-                    self.print_best_feasible_solution(step_RBD, start_time, Gap, IterCount);
-                    break;
-    
-
-    def add_cuts_from_step0(self):
-        for c in range(len(self.Cuts)):
-            for sp in range(self.data.num_rep_periods):
-                self.add_optimality_cut_to_MP_model(sp, self.Cuts[c][sp]);
-
+class BD(Classical_Benders.BD):
     def solve_SP_instance(self, sp):
-        self.build_SP_model(self.MP_DV_values, sp);
-        self.SP_model[sp].optimize();
-        self.get_SP_DV_dual_vals(sp); # both dual and DV values
-        return sp, self.SP_Duals[sp]
-    
-    def print_best_feasible_solution(self, step_RBD, start_time, Gap, nIter):
-        DVo_vals = DV_Classes.Power_System_Operational_Decision_Values();
-        Get_Vals.concat_SP_models_values(self.best_SP_Vals, DVo_vals, self.data, self.Setting);
-        process = psutil.Process(os.getpid());
-        memory_info = process.memory_info();
-        RAM_MB = memory_info.rss / (1024 * 1024);
-        Print_Outcomes.publish_summary(self.MP_DV_values, DVo_vals, step_RBD, nIter, self.LB, self.data, self.Setting, start_time, Gap, RAM_MB);
-                
+        self.build_SP_model(self.MP_DV_values, sp)
+        self.SP_model[sp].optimize()
+        self.get_SP_DV_dual_vals(sp)
 
-    def update_UB_and_best_investment_values(self):
-        UB_temp = self.MP_DV_values.total_investment_cost;
-        for sp in range(self.data.num_rep_periods):
-            UB_temp += self.SP_DV_values[sp].operational_cost;
-        if UB_temp < self.UB:
-            self.UB = UB_temp;
-            self.best_MP_DV_vals = copy.deepcopy(self.MP_DV_values);
-            for sp in range(self.data.num_rep_periods):
-                self.best_SP_Vals[sp] = copy.deepcopy(self.SP_DV_values[sp]);
-        Gap = np.round(abs(self.UB-self.LB)*100/self.UB,1);
-        if Gap<1:
-            self.print_sum_inv_variables(self.best_MP_DV_vals);
-          
+        try:
+            cut = self.solve_strengthened_SP_instance(sp, self.SP_Duals[sp])
+        except Exception as exc:
+            if not self.Setting.get('BDD1_fallback_to_classical', True):
+                raise
+            if self.Setting.get('BDD1_show_strengthening_log', True):
+                print(f'\t\t BDD1 fallback to classical cut for SP {sp}: {exc}')
+            cut = BDD1_Cut(sp, self.SP_Duals[sp], None, None, fallback=True)
+        return sp, cut
 
-    def print_sum_inv_variables(self, MP_vals):
-              # print some of the values
-        for g in range(self.data.num_generators):
-            for n in range(self.data.num_nodes):
-                if MP_vals.gen_operational[g,n] > 0.1:
-                    print(f'gen_op[{g},{n}] = {(MP_vals.gen_operational[g,n])}');
-        for s in range(self.data.num_storages):
-            for n in range(self.data.num_nodes):
-                if MP_vals.storage_level[s,n] > 0.1:
-                    print(f'storage_level[{s},{n}] = {(MP_vals.storage_level[s,n])}');
-                if MP_vals.storage_capacity[s,n] >0.1:
-                    print(f'storage_capacity[{s},{n}] = {(MP_vals.storage_capacity[s,n])}');
-        for l in range(self.data.num_lines):
-            if MP_vals.line_established[l] > 0.1:
-                print(f'line_established[{l}] = {(MP_vals.line_established[l])}');
-        print(f'total SP cost {sum(MP_vals.theta[i] for i in range(self.data.num_rep_periods))}');
+    def add_optimality_cut_to_MP_model(self, sp, Cut):
+        if isinstance(Cut, BDD1_Cut) and not Cut.fallback:
+            self.add_strengthened_optimality_cut_to_MP_model(sp, Cut)
+        elif isinstance(Cut, BDD1_Cut):
+            super().add_optimality_cut_to_MP_model(sp, Cut.duals)
+        else:
+            super().add_optimality_cut_to_MP_model(sp, Cut)
 
-        for d in range(self.data.num_rep_periods):
-            if MP_vals.emissions_per_period[d] > 0:
-                print(f'emissions_per_period[{d}] = {MP_vals.emissions_per_period[d]}');
-        print(f'total inv cost: {MP_vals.total_investment_cost}');
+    def solve_strengthened_SP_instance(self, sp, Duals):
+        model, local_DV, local_DVo, local_con, sp_hours, sp_hours_weights = self.build_strengthened_SP_model(sp, Duals)
+        model.optimize()
 
-    
-    def solve_regularized_MP(self):
-        alpha = 0.5;
-        self.MP_model.set_objective(0, poi.ObjectiveSense.Minimize);
-    
-        # calculate LB_k
-        LBk = self.LB + alpha*(self.UB - self.LB);
-        reg_const = self.MP_model.add_linear_constraint(self.MP_DV.total_investment_cost + poi.quicksum(self.MP_DV.theta[s] for s in range(self.data.num_rep_periods)), poi.Leq, LBk);
-        self.MP_model.optimize();
-        # print(f'\t\t\t\t LBk value: {round(LBk/1e7)}e7 \n');
-        Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-    
-        self.MP_model.delete_constraint(reg_const);
+        local_oper_vals = DV_Classes.Power_System_Operational_Decision_Values()
+        local_inv_vals = DV_Classes.Power_System_Investment_Decision_Values()
+        nT = len(sp_hours)
+        Get_Vals.get_operational_variable_values(model, local_DVo, local_oper_vals, nT, self.data)
+        self.get_local_copy_values(model, local_DV, local_inv_vals)
 
+        if self.Setting.get('BDD1_show_strengthening_log', True):
+            classical_obj = self.SP_DV_values[sp].operational_cost
+            strengthened_rhs = local_oper_vals.operational_cost + self.dual_weighted_master_value(sp, Duals, self.MP_DV_values) - self.dual_weighted_master_value(sp, Duals, local_inv_vals)
+            lift = strengthened_rhs - classical_obj
+            print(f'\t\t BDD1 SP {sp}: classical={round(classical_obj, 2)}, strengthened_rhs={round(strengthened_rhs, 2)}, lift={round(lift, 2)}')
 
+        return BDD1_Cut(sp, Duals, local_inv_vals, local_oper_vals.operational_cost)
 
+    def build_strengthened_SP_model(self, sp, Duals):
+        slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period'])
+        sp_hours = self.data.rep_hours[slice1]
+        sp_hours_weights = self.data.rep_hours_weights[slice1]
+        nT = len(sp_hours)
 
-    def add_optimality_cut_to_MP_model(self, sp, Duals):
-        # implement a function to add optimality cuts to the MP model based on the dual values obtained from the SP
-        slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period']);
-        sp_hours = self.data.rep_hours[slice1];
-        nT = len(sp_hours);
-        
-        lhs = poi.ExprBuilder();
-        lhs += self.MP_DV.theta[sp];
+        model = self.create_solver_model()
+        self.set_strengthened_solver_parameters(model)
 
-        # terms from production limit and ramping constraints
+        local_setting = copy.copy(self.Setting)
+        local_setting['solution_method'] = 'extensive_form'
+        local_setting['relax_int_vars'] = False
+
+        local_DV = DV_Classes.Power_System_Investment_Decision_Variables()
+        local_DVo = DV_Classes.Power_System_Operational_Decision_Variables()
+        local_con = DV_Classes.Oper_Constraints_Names(self.data)
+
+        Define_DVs.define_investment_decision_variables(model, local_DV, self.data, local_setting)
+        Define_DVs.define_operational_decision_variables(model, local_DVo, nT, self.data)
+        Objective_Function.define_operational_cost_expression(model, local_DVo, sp_hours_weights, self.data, self.Setting)
+
+        Constraints.inv_const_num_operational_generators(model, local_DV, self.data, local_setting)
+        Constraints.inv_const_land_availability_for_renewables(model, local_DV, self.data)
+        Constraints.inv_const_CRM(model, local_DV, self.data, local_setting)
+        Constraints.inv_storage_duaration_range(model, local_DV, self.data)
+        Constraints.inv_const_emissions_limit(model, local_DV, self.data, local_setting)
+
+        Constraints.oper_const_production_limits(model, local_DV, local_DVo, local_con, None, sp_hours, self.data, local_setting)
+        Constraints.oper_const_ramping(model, local_DV, local_DVo, None, local_con, nT, self.data, local_setting)
+        Constraints.oper_const_balance_equation(model, local_DVo, local_con, sp_hours, self.data, local_setting)
+        Constraints.oper_const_flow_limits(model, local_DV, local_DVo, None, local_con, nT, self.data, local_setting)
+        self.add_local_emissions_constraint(model, local_DV, local_DVo, sp, sp_hours_weights, local_con)
+        Constraints.oper_const_storage(model, local_DV, local_DVo, None, local_con, nT, self.data, local_setting)
+
+        model.set_objective(
+            local_DVo.operational_cost - self.dual_weighted_master_expr(sp, Duals, local_DV),
+            poi.ObjectiveSense.Minimize
+        )
+        return model, local_DV, local_DVo, local_con, sp_hours, sp_hours_weights
+
+    def add_strengthened_optimality_cut_to_MP_model(self, sp, Cut):
+        lhs = poi.ExprBuilder()
+        lhs += self.MP_DV.theta[sp]
+        lhs -= self.dual_weighted_master_expr(sp, Cut.duals, self.MP_DV)
+        lhs += self.dual_weighted_master_value(sp, Cut.duals, Cut.local_vals)
+        lhs -= Cut.strengthened_operational_cost
+        self.MP_model.add_linear_constraint(lhs, poi.Geq, 0)
+
+        if self.Setting.get('BDD1_show_strengthening_log', True):
+            current_rhs = Cut.strengthened_operational_cost + self.dual_weighted_master_value(sp, Cut.duals, self.MP_DV_values) - self.dual_weighted_master_value(sp, Cut.duals, Cut.local_vals)
+            classical_rhs = self.SP_DV_values[sp].operational_cost
+            print(f'\t\t BDD1 cut check SP {sp}: rhs@current={round(current_rhs, 2)}, classical={round(classical_rhs, 2)}')
+
+    def create_solver_model(self):
+        if self.Setting['solver'] == 'gurobi':
+            return gurobi.Model()
+        if self.Setting['solver'] == 'highs':
+            return highs.Model()
+        raise ValueError(f"Unsupported solver for BDD1: {self.Setting['solver']}")
+
+    def set_strengthened_solver_parameters(self, model):
+        if self.Setting['solver'] == 'gurobi':
+            model.set_raw_parameter('OutputFlag', self.Setting['show_log_info'])
+            model.set_raw_parameter('LogToConsole', self.Setting['show_log_info'])
+            model.set_raw_parameter('MIPGap', self.Setting.get('BDD1_sp_mip_gap', 0.005))
+            model.set_raw_parameter('Timelimit', self.Setting['wall_clock_time_lim'])
+        if self.Setting['solver'] == 'highs':
+            pass
+
+    def add_local_emissions_constraint(self, model, DVi, DVo, sp, hours_weights, Con):
+        Con.emissions_limit = np.empty((1), dtype=object)
+        if self.Setting['Decarbonization_target'] > 0:
+            nT = len(hours_weights)
+            Con.emissions_limit[0] = model.add_linear_constraint(
+                poi.quicksum(
+                    hours_weights[t] * DVo.generation[g, n, t] * self.data.Generators[g].heat_rate * self.data.Generators[g].emission_kg_per_MMBtu
+                    for g in range(self.data.num_generators)
+                    for n in range(self.data.num_nodes)
+                    for t in range(nT)
+                    if self.data.Generators[g].is_thermal
+                ) - DVi.emissions_per_period[sp],
+                poi.Leq,
+                0
+            )
+
+    def get_local_copy_values(self, model, DV, DV_values):
+        DV_values.gen_established = np.array([[max(0, model.get_value(DV.gen_established[g, n])) for n in range(self.data.num_nodes)] for g in range(self.data.num_generators)])
+        DV_values.gen_operational = np.array([[max(0, model.get_value(DV.gen_operational[g, n])) for n in range(self.data.num_nodes)] for g in range(self.data.num_generators)])
+        DV_values.storage_capacity = np.array([[max(0, model.get_value(DV.storage_capacity[s, n])) for n in range(self.data.num_nodes)] for s in range(self.data.num_storages)])
+        DV_values.storage_level = np.array([[max(0, model.get_value(DV.storage_level[s, n])) for n in range(self.data.num_nodes)] for s in range(self.data.num_storages)])
+        DV_values.line_established = np.array([max(0, model.get_value(DV.line_established[l])) for l in range(self.data.num_lines)])
+        DV_values.emissions_per_period = np.array([max(0, model.get_value(DV.emissions_per_period[d])) for d in range(self.data.num_rep_periods)])
+
+    def dual_weighted_master_expr(self, sp, Duals, DV):
+        slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period'])
+        sp_hours = self.data.rep_hours[slice1]
+        nT = len(sp_hours)
+
+        expr = poi.ExprBuilder()
         for g in range(self.data.num_generators):
             for n in range(self.data.num_nodes):
                 for t in range(nT):
                     if self.data.Generators[g].is_thermal:
-                        lhs -= Duals.prod_limit[g,n,t]*(self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
-                    elif self.data.Generators[g].Type=='solar-UPV':
-                        lhs -= Duals.prod_limit[g,n,t]*(self.data.Nodes[n].solar_cf[sp_hours[t]]*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
-                    elif self.data.Generators[g].Type=='wind-new':
-                        lhs -= Duals.prod_limit[g,n,t]*(self.data.Nodes[n].wind_cf[sp_hours[t]]*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
+                        expr += Duals.prod_limit[g, n, t] * self.data.Generators[g].nameplate_capacity * DV.gen_operational[g, n]
+                    elif self.data.Generators[g].Type == 'solar-UPV':
+                        expr += Duals.prod_limit[g, n, t] * self.data.Nodes[n].solar_cf[sp_hours[t]] * self.data.Generators[g].nameplate_capacity * DV.gen_operational[g, n]
+                    elif self.data.Generators[g].Type == 'wind-new':
+                        expr += Duals.prod_limit[g, n, t] * self.data.Nodes[n].wind_cf[sp_hours[t]] * self.data.Generators[g].nameplate_capacity * DV.gen_operational[g, n]
 
-                    if t>0 and self.data.Generators[g].is_thermal:
-                        lhs -= Duals.ramp_limit_up[g,n,t]*(self.data.Generators[g].ramp_rate*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
-                        lhs -= Duals.ramp_limit_down[g,n,t]*(self.data.Generators[g].ramp_rate*self.data.Generators[g].nameplate_capacity*self.MP_DV.gen_operational[g,n]);
-        # Balance equation
-        if self.Setting['is_copper_plate_approx']:
-            for t in range(nT):
-                rhs = 0;
-                [rhs := rhs + self.data.Nodes[n].demand[sp_hours[t]] for n in range(self.data.num_nodes)];
-                lhs -= Duals.load_balance[t]*rhs;
-        else:
-            for n in range(self.data.num_nodes):
-                for t in range(nT):                                
-                    lhs -= Duals.load_balance[n,t]*self.data.Nodes[n].demand[sp_hours[t]];
+                    if t > 0 and self.data.Generators[g].is_thermal:
+                        expr += Duals.ramp_limit_up[g, n, t] * self.data.Generators[g].ramp_rate * self.data.Generators[g].nameplate_capacity * DV.gen_operational[g, n]
+                        expr += Duals.ramp_limit_down[g, n, t] * self.data.Generators[g].ramp_rate * self.data.Generators[g].nameplate_capacity * DV.gen_operational[g, n]
 
-        # flow
         if not self.Setting['is_copper_plate_approx']:
             for l in range(self.data.num_lines):
                 for t in range(nT):
-                    lhs -= Duals.flow_limit1[l,t]*self.MP_DV.line_established[l];
-                    lhs -= Duals.flow_limit2[l,t]*self.MP_DV.line_established[l];
-        
-        # storage
-        for s in range(self.data.num_storages):                
+                    expr += Duals.flow_limit1[l, t] * DV.line_established[l]
+                    expr += Duals.flow_limit2[l, t] * DV.line_established[l]
+
+        for s in range(self.data.num_storages):
             for n in range(self.data.num_nodes):
-                lhs -= Duals.storage_SOC_balance[n]*(self.MP_DV.storage_level[s,n]/2);
+                expr += Duals.storage_SOC_balance[n] * DV.storage_level[s, n] / 2
                 for t in range(nT):
-                    lhs -= Duals.storage_charge_limit[n,t]*self.MP_DV.storage_capacity[s,n];
-                    lhs -= Duals.storage_discharge_limit[n,t]*self.MP_DV.storage_capacity[s,n];
-                    lhs -= Duals.storage_SOC_limit[n,t]*self.MP_DV.storage_level[s,n];    
-        # emissions limit
+                    expr += Duals.storage_charge_limit[n, t] * DV.storage_capacity[s, n]
+                    expr += Duals.storage_discharge_limit[n, t] * DV.storage_capacity[s, n]
+                    expr += Duals.storage_SOC_limit[n, t] * DV.storage_level[s, n]
+
         if self.Setting['Decarbonization_target'] > 0:
-            lhs -= Duals.emissions_limit*self.MP_DV.emissions_per_period[sp];
+            expr += Duals.emissions_limit * DV.emissions_per_period[sp]
+        return expr
 
+    def dual_weighted_master_value(self, sp, Duals, DV_values):
+        slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period'])
+        sp_hours = self.data.rep_hours[slice1]
+        nT = len(sp_hours)
+        val = 0
 
-        self.MP_model.add_linear_constraint(lhs, poi.Geq, 0);
-       
+        for g in range(self.data.num_generators):
+            for n in range(self.data.num_nodes):
+                for t in range(nT):
+                    if self.data.Generators[g].is_thermal:
+                        val += Duals.prod_limit[g, n, t] * self.data.Generators[g].nameplate_capacity * DV_values.gen_operational[g, n]
+                    elif self.data.Generators[g].Type == 'solar-UPV':
+                        val += Duals.prod_limit[g, n, t] * self.data.Nodes[n].solar_cf[sp_hours[t]] * self.data.Generators[g].nameplate_capacity * DV_values.gen_operational[g, n]
+                    elif self.data.Generators[g].Type == 'wind-new':
+                        val += Duals.prod_limit[g, n, t] * self.data.Nodes[n].wind_cf[sp_hours[t]] * self.data.Generators[g].nameplate_capacity * DV_values.gen_operational[g, n]
 
+                    if t > 0 and self.data.Generators[g].is_thermal:
+                        val += Duals.ramp_limit_up[g, n, t] * self.data.Generators[g].ramp_rate * self.data.Generators[g].nameplate_capacity * DV_values.gen_operational[g, n]
+                        val += Duals.ramp_limit_down[g, n, t] * self.data.Generators[g].ramp_rate * self.data.Generators[g].nameplate_capacity * DV_values.gen_operational[g, n]
 
+        if not self.Setting['is_copper_plate_approx']:
+            for l in range(self.data.num_lines):
+                for t in range(nT):
+                    val += Duals.flow_limit1[l, t] * DV_values.line_established[l]
+                    val += Duals.flow_limit2[l, t] * DV_values.line_established[l]
 
-    def build_MP_model(self): 
-        if self.Setting['solver']=='gurobi':
-            self.MP_model = gurobi.Model();
-            self.MP_model.set_raw_parameter('OutputFlag', self.Setting['show_log_info']);
-            self.MP_model.set_raw_parameter('LogToConsole', self.Setting['show_log_info']);            
-            if self.Setting['Cross_over_status']==0:                
-                # self.P_model.set_raw_parameter('Presolve', -1);
-                # self.P_model.set_raw_parameter('CrossoverBasis', 0);
-                self.MP_model.set_raw_parameter('Method', 2);
-                self.MP_model.set_raw_parameter('Crossover', 0);
-                # self.MP_model.set_raw_parameter('BarHomogeneous', 1);                 
-        if self.Setting['solver'] == 'highs':
-            self.MP_model = highs.Model();  
-        # self.MP_model.set_raw_parameter('MIPGap', self.Setting['solver_gap']);
-        # self.MP_model.set_raw_parameter('LogFile', 'log.txt');
-        
+        for s in range(self.data.num_storages):
+            for n in range(self.data.num_nodes):
+                val += Duals.storage_SOC_balance[n] * DV_values.storage_level[s, n] / 2
+                for t in range(nT):
+                    val += Duals.storage_charge_limit[n, t] * DV_values.storage_capacity[s, n]
+                    val += Duals.storage_discharge_limit[n, t] * DV_values.storage_capacity[s, n]
+                    val += Duals.storage_SOC_limit[n, t] * DV_values.storage_level[s, n]
 
-        Define_DVs.define_investment_decision_variables(self.MP_model, self.MP_DV, self.data, self.Setting);
-        Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
-#         # add constraints to the MP model
-        Constraints.inv_const_num_operational_generators(self.MP_model, self.MP_DV, self.data, self.Setting);
-        Constraints.inv_const_land_availability_for_renewables(self.MP_model, self.MP_DV, self.data);
-        Constraints.inv_const_CRM(self.MP_model, self.MP_DV, self.data, self.Setting);
-        Constraints.inv_storage_duaration_range(self.MP_model, self.MP_DV, self.data);
-        Constraints.inv_const_emissions_limit(self.MP_model, self.MP_DV, self.data, self.Setting); # over periods, not per time step
-
-        # implement a function to add cuts
-    
-    def build_SP_model(self, MP_vals, sp):  # sp: the SP number (representative period number)
-        slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period']);
-        sp_hours = self.data.rep_hours[slice1];
-        sp_hours_weights = self.data.rep_hours_weights[slice1];
-        nT = len(sp_hours);
-        if self.Setting['solver']=='gurobi':
-            self.SP_model[sp] = gurobi.Model();
-            self.SP_model[sp].set_raw_parameter('OutputFlag', self.Setting['show_log_info']);
-            self.SP_model[sp].set_raw_parameter('LogToConsole', self.Setting['show_log_info']);            
-            if self.Setting['Cross_over_status']==0:
-                # self.P_model.set_raw_parameter('Presolve', -1);
-                # self.P_model.set_raw_parameter('CrossoverBasis', 0);
-                self.SP_model[sp].set_raw_parameter('Method', 2);
-                self.SP_model[sp].set_raw_parameter('Crossover', 0);
-                # self.SP_model[sp].set_raw_parameter('BarHomogeneous', 1);                 
-        if self.Setting['solver'] == 'highs':
-            self.SP_model[sp] = highs.Model();   
-        # self.SP_model[sp].set_raw_parameter('MIPGap', self.Setting['solver_gap']);
-        
-        Define_DVs.define_operational_decision_variables(self.SP_model[sp], self.SP_DV[sp], nT, self.data);
-        Objective_Function.define_operational_cost_expression(self.SP_model[sp], self.SP_DV[sp], sp_hours_weights, self.data, self.Setting);
-        self.SP_model[sp].set_objective(self.SP_DV[sp].operational_cost, poi.ObjectiveSense.Minimize);
-
-        Constraints.oper_const_production_limits(self.SP_model[sp], self.MP_DV, self.SP_DV[sp], self.SP_Con[sp], MP_vals, sp_hours, self.data, self.Setting);
-        Constraints.oper_const_ramping(self.SP_model[sp], self.MP_DV, self.SP_DV[sp], MP_vals, self.SP_Con[sp], nT, self.data, self.Setting);          
-        Constraints.oper_const_balance_equation(self.SP_model[sp], self.SP_DV[sp], self.SP_Con[sp], sp_hours, self.data, self.Setting);
-        Constraints.oper_const_flow_limits(self.SP_model[sp], self.MP_DV, self.SP_DV[sp], MP_vals, self.SP_Con[sp], nT, self.data, self.Setting); 
-        Constraints.oper_const_emissions_limit(self.SP_model[sp], self.MP_DV, self.SP_DV[sp], MP_vals, self.SP_Con[sp], [sp], sp_hours_weights, self.data, self.Setting); 
-        Constraints.oper_const_storage(self.SP_model[sp], self.MP_DV, self.SP_DV[sp], MP_vals, self.SP_Con[sp], nT, self.data, self.Setting);
-
-
-    def get_SP_DV_dual_vals(self, sp):
-        slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period']);
-        sp_hours = self.data.rep_hours[slice1];
-        sp_hours_weights = self.data.rep_hours_weights[slice1];
-        nT = len(sp_hours);
-        Get_Vals.get_operational_variable_values(self.SP_model[sp], self.SP_DV[sp], self.SP_DV_values[sp], nT, self.data);
-        Get_Vals.get_operational_constraint_dual_values(self.SP_model[sp], self.SP_Con[sp], self.SP_Duals[sp], nT, self.data, self.Setting);
-
-
-
-
-
-
-
-
-
+        if self.Setting['Decarbonization_target'] > 0:
+            val += Duals.emissions_limit * DV_values.emissions_per_period[sp]
+        return val

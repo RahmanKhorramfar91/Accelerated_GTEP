@@ -95,9 +95,9 @@ def oper_const_production_limits(Model, DVi, DVo, Con, DVi_vals, sp_hours, data,
                     if data.Generators[g].is_thermal:
                         Con.prod_limit[g,n,t] = Model.add_linear_constraint(DVo.generation[g,n,t]-data.Generators[g].nameplate_capacity*DVi.gen_operational[g,n], poi.Leq, 0);
                     elif data.Generators[g].Type=='solar-UPV':
-                        Con.prod_limit[g,n,t] = Model.add_linear_constraint(DVo.generation[g,n,t]-data.Nodes[n].solar_cf[data.rep_hours[t]]*data.Generators[g].nameplate_capacity*DVi.gen_operational[g,n], poi.Leq, 0);
+                        Con.prod_limit[g,n,t] = Model.add_linear_constraint(DVo.generation[g,n,t]-data.Nodes[n].solar_cf[sp_hours[t]]*data.Generators[g].nameplate_capacity*DVi.gen_operational[g,n], poi.Leq, 0);
                     elif data.Generators[g].Type=='wind-new':
-                        Con.prod_limit[g,n,t] = Model.add_linear_constraint(DVo.generation[g,n,t]-data.Nodes[n].wind_cf[data.rep_hours[t]]*data.Generators[g].nameplate_capacity*DVi.gen_operational[g,n], poi.Leq, 0);
+                        Con.prod_limit[g,n,t] = Model.add_linear_constraint(DVo.generation[g,n,t]-data.Nodes[n].wind_cf[sp_hours[t]]*data.Generators[g].nameplate_capacity*DVi.gen_operational[g,n], poi.Leq, 0);
     else:                
         for g in range(data.num_generators):
             for n in range(data.num_nodes):
@@ -281,4 +281,3 @@ def set_inv_decision_from_in_sample(Model, DV, data, Setting):
     
     for l in range(data.num_lines):
         Model.add_linear_constraint(DV.line_established[l], poi.Eq, df.iloc[l, data.num_generators+2]);
-    

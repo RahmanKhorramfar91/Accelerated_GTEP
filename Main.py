@@ -16,6 +16,7 @@ from src.Data_Loader import Data;
 from src.Model_Class import Power_System_Model;
 # from src.BD_Class import BD;
 from src.Benders import BD;
+from src.BDD import BD as BDD1;
 # from src.RBD import RBD;
 import psutil, os;  # for memory usage
 
@@ -59,6 +60,9 @@ if Setting['solution_method'] == 'benders_multicut':
     power_model.Benders_run(data, Setting);
 if Setting['solution_method'] == 'RBD':
     Benders_model = BD(data, Setting);
+    Benders_model.run_Benders();
+if Setting['solution_method'] == 'BDD1':
+    Benders_model = BDD1(data, Setting);
     Benders_model.run_Benders();
 
 process = psutil.Process(os.getpid());
