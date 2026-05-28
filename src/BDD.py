@@ -60,6 +60,7 @@ class BD(Classical_Benders.BD):
         try:
             fixed_model, fixed_DV, fixed_DVo, fixed_links, sp_hours = self.build_fixed_copy_SP_model(sp)
             fixed_model.optimize()
+            self.require_optimal_solution(fixed_model, f'fixed-copy SP {sp}')
 
             nT = len(sp_hours)
             Get_Vals.get_operational_variable_values(fixed_model, fixed_DVo, self.SP_DV_values[sp], nT, self.data)
@@ -96,6 +97,7 @@ class BD(Classical_Benders.BD):
             poi.ObjectiveSense.Minimize
         )
         model.optimize()
+        self.require_optimal_solution(model, f'strengthened SP {sp}')
 
         local_oper_vals = DV_Classes.Power_System_Operational_Decision_Values()
         local_inv_vals = DV_Classes.Power_System_Investment_Decision_Values()
@@ -103,13 +105,32 @@ class BD(Classical_Benders.BD):
         Get_Vals.get_operational_variable_values(model, local_DVo, local_oper_vals, nT, self.data)
         self.get_local_copy_values(model, local_DV, local_inv_vals)
 
+        fixed_obj = self.SP_DV_values[sp].operational_cost
+        strengthened_rhs = local_oper_vals.operational_cost + self.copy_multiplier_value(multipliers, self.MP_DV_values) - self.copy_multiplier_value(multipliers, local_inv_vals)
+        self.validate_strengthened_cut(sp, fixed_obj, strengthened_rhs)
+
         if self.Setting.get('BDD1_show_strengthening_log', True):
-            fixed_obj = self.SP_DV_values[sp].operational_cost
-            strengthened_rhs = local_oper_vals.operational_cost + self.copy_multiplier_value(multipliers, self.MP_DV_values) - self.copy_multiplier_value(multipliers, local_inv_vals)
             lift = strengthened_rhs - fixed_obj
             print(f'\t\t BDD1 SP {sp}: fixed-copy={round(fixed_obj, 2)}, strengthened_rhs={round(strengthened_rhs, 2)}, lift={round(lift, 2)}')
 
         return BDD1_Cut(sp, multipliers, local_inv_vals, local_oper_vals.operational_cost)
+
+    def require_optimal_solution(self, model, model_name):
+        status = model.get_model_attribute(poi.ModelAttribute.TerminationStatus)
+        if status != poi.TerminationStatusCode.OPTIMAL:
+            raw_status = model.get_model_attribute(poi.ModelAttribute.RawStatusString)
+            raise RuntimeError(f'{model_name} did not solve to optimality: {status} ({raw_status})')
+
+    def validate_strengthened_cut(self, sp, fixed_obj, strengthened_rhs):
+        if not np.isfinite(strengthened_rhs):
+            raise RuntimeError(f'BDD1 strengthened cut for SP {sp} has non-finite RHS: {strengthened_rhs}')
+
+        tolerance = self.Setting.get('BDD1_cut_validation_tol', 1e-6) * max(1.0, abs(fixed_obj))
+        if strengthened_rhs < fixed_obj - tolerance:
+            raise RuntimeError(
+                f'BDD1 strengthened cut for SP {sp} is invalid at the current MP point: '
+                f'rhs={strengthened_rhs}, fixed-copy={fixed_obj}'
+            )
 
     def build_local_copy_SP_model(self, sp, relax_copy_integrality):
         slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period'])
