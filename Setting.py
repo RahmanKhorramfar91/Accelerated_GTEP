@@ -29,6 +29,7 @@ Setting = {
     'Decarbonization_target': 0.8,              # decarbonization target (e.g., 0.8 for 80% reduction by 2050)
     # solution method
     'solution_method': 'extensive_form',
+    'Benders_persistent_SP': False,      # whether Benders reuses SP models and updates RHSs instead of rebuilding them
     'BDD1_sp_mip_gap': 0.005,
     'BDD1_fallback_to_classical': True,
     'BDD1_show_strengthening_log': True,

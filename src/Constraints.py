@@ -177,8 +177,8 @@ def oper_const_flow_limits(Model, DVi, DVo, DVi_vals, Con, nT, data, Setting):
             for l in range(data.num_lines):
                 for t in range(nT):
                     if data.Lines[l].is_existing:
-                        Con.flow_limit1[l,t]= Model.add_linear_constraint(DVo.flow[l,t], poi.Leq, data.Lines[l].capacity-DVi_vals.line_established[l]);
-                        Con.flow_limit2[l,t]= Model.add_linear_constraint(-DVo.flow[l,t], poi.Leq, data.Lines[l].capacity-DVi_vals.line_established[l]);
+                        Con.flow_limit1[l,t]= Model.add_linear_constraint(DVo.flow[l,t], poi.Leq, data.Lines[l].capacity+DVi_vals.line_established[l]);
+                        Con.flow_limit2[l,t]= Model.add_linear_constraint(-DVo.flow[l,t], poi.Leq, data.Lines[l].capacity+DVi_vals.line_established[l]);
                     else:
                         Con.flow_limit1[l,t]= Model.add_linear_constraint(DVo.flow[l,t], poi.Leq, DVi_vals.line_established[l]);
                         Con.flow_limit2[l,t]= Model.add_linear_constraint(-DVo.flow[l,t], poi.Leq, DVi_vals.line_established[l]);

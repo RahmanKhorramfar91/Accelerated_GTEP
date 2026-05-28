@@ -79,4 +79,8 @@ def define_MP_objective(Model, DV, data, Setting):
     define_investment_cost_expression(Model, DV, data, Setting);
 
     # set the objective function                                 
+    set_MP_objective(Model, DV, data);
+
+def set_MP_objective(Model, DV, data):
+    # reset the objective without re-adding the investment cost constraints
     Model.set_objective(DV.total_investment_cost+poi.quicksum(DV.theta[s] for s in range(data.num_rep_periods)), poi.ObjectiveSense.Minimize);

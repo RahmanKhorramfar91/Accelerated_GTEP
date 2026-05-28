@@ -49,19 +49,10 @@ class BD():
         self.SP_model = [None for _ in range(self.data.num_rep_periods)];
         self.LB = 0;
         self.UB = 1e15;
-        self._persistent_sp_notice_printed = False;
     
 
 
     def run_Benders(self):
-        original_relax_int_vars = self.Setting['relax_int_vars'];
-        try:
-            self._run_Benders_impl();
-        finally:
-            self.Setting['relax_int_vars'] = original_relax_int_vars;
-
-
-    def _run_Benders_impl(self):
         start_time = time.time()
         is_LP = self.Setting['relax_int_vars']; 
         self.Setting['relax_int_vars'] = True;       
@@ -69,10 +60,8 @@ class BD():
         self.build_MP_model();
         
         self.MP_model.optimize();
-        self.require_optimal_solution(self.MP_model, 'Step 0 initial MP');
         print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
         Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-        self.build_SP_models_once();
         Gap = np.inf;
         MaxIter= 100; 
         IterCount = -1;
@@ -94,9 +83,8 @@ class BD():
             self.update_UB_and_best_investment_values();
         
             # set the objective (changes in the regulaized problem) and re-solve MP, get inv values
-            Objective_Function.set_MP_objective(self.MP_model, self.MP_DV, self.data);
+            Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
             self.MP_model.optimize();
-            self.require_optimal_solution(self.MP_model, f'Step 0 MP iteration {IterCount}');
             Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
             # self.print_sum_inv_variables(self.MP_DV_values);
             # update LB, calculate gap
@@ -126,11 +114,8 @@ class BD():
             # add cuts from previous step
             self.add_cuts_from_step0();
             self.MP_model.optimize();
-            self.require_optimal_solution(self.MP_model, 'Step 2 initial MP');
             print(f'MP Objective value: {np.round(self.MP_model.get_model_attribute(poi.ModelAttribute.ObjectiveValue),2)}');
             Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);                        
-            self.reset_SP_models();
-            self.build_SP_models_once();
             MaxIter= 200; 
             IterCount = -1;
             # main loop for Step 0
@@ -147,9 +132,8 @@ class BD():
                 self.update_UB_and_best_investment_values();
             
                 # set the objective (changes in the regulaized problem) and re-solve MP, get inv values
-                Objective_Function.set_MP_objective(self.MP_model, self.MP_DV, self.data);
+                Objective_Function.define_MP_objective(self.MP_model, self.MP_DV, self.data, self.Setting);
                 self.MP_model.optimize();
-                self.require_optimal_solution(self.MP_model, f'Step 2 MP iteration {IterCount}');
                 Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
                 # self.print_sum_inv_variables(self.MP_DV_values);
                 # update LB, calculate gap
@@ -175,103 +159,9 @@ class BD():
             for sp in range(self.data.num_rep_periods):
                 self.add_optimality_cut_to_MP_model(sp, self.Cuts[c][sp]);
 
-    def require_optimal_solution(self, model, model_name):
-        status = model.get_model_attribute(poi.ModelAttribute.TerminationStatus);
-        if status != poi.TerminationStatusCode.OPTIMAL:
-            raw_status = self.safe_model_attribute(model, poi.ModelAttribute.RawStatusString, 'unavailable');
-            raise RuntimeError(f'{model_name} did not solve to optimality: {status} ({raw_status})');
-
-    def safe_model_attribute(self, model, attribute, default):
-        try:
-            return model.get_model_attribute(attribute);
-        except Exception:
-            return default;
-
-    def persistent_SP_enabled(self):
-        if not self.Setting.get('Benders_persistent_SP', False):
-            return False;
-        if self.Setting['solver'] != 'gurobi':
-            if not self._persistent_sp_notice_printed:
-                print(f"Benders persistent SP is only implemented for gurobi; rebuilding SPs for solver {self.Setting['solver']}.");
-                self._persistent_sp_notice_printed = True;
-            return False;
-        if self.data.num_storages != 1:
-            raise RuntimeError('Benders persistent SP currently supports exactly one storage type because storage constraint handles are not storage-indexed.');
-        return True;
-
-    def reset_SP_models(self):
-        self.SP_model = [None for _ in range(self.data.num_rep_periods)];
-        self.SP_DV = [DV_Classes.Power_System_Operational_Decision_Variables() for _ in range(self.data.num_rep_periods)];
-        self.SP_Duals = [DV_Classes.Dual_vals(self.data) for _ in range(self.data.num_rep_periods)];
-        self.SP_DV_values = [DV_Classes.Power_System_Operational_Decision_Values() for _ in range(self.data.num_rep_periods)];
-        self.SP_Con = [DV_Classes.Oper_Constraints_Names(self.data) for _ in range(self.data.num_rep_periods)];
-
-    def build_SP_models_once(self):
-        if not self.persistent_SP_enabled():
-            return;
-        for sp in range(self.data.num_rep_periods):
-            self.build_SP_model(self.MP_DV_values, sp);
-        print('Benders persistent SP enabled: built SP models once and will update RHS values between iterations.');
-
-    def set_constraint_rhs(self, model, con, rhs):
-        model.set_constraint_raw_attribute(con, gurobi.GRB.Attr.RHS, float(rhs));
-
-    def update_SP_rhs(self, sp, MP_vals):
-        slice1 = np.arange(sp*self.Setting['hours_per_period'], (sp+1)*self.Setting['hours_per_period']);
-        sp_hours = self.data.rep_hours[slice1];
-        nT = len(sp_hours);
-        con = self.SP_Con[sp];
-        model = self.SP_model[sp];
-
-        for g in range(self.data.num_generators):
-            for n in range(self.data.num_nodes):
-                for t in range(nT):
-                    if self.data.Generators[g].is_thermal:
-                        prod_rhs = self.data.Generators[g].nameplate_capacity*MP_vals.gen_operational[g,n];
-                    elif self.data.Generators[g].Type=='solar-UPV':
-                        prod_rhs = self.data.Nodes[n].solar_cf[sp_hours[t]]*self.data.Generators[g].nameplate_capacity*MP_vals.gen_operational[g,n];
-                    elif self.data.Generators[g].Type=='wind-new':
-                        prod_rhs = self.data.Nodes[n].wind_cf[sp_hours[t]]*self.data.Generators[g].nameplate_capacity*MP_vals.gen_operational[g,n];
-                    else:
-                        continue;
-                    self.set_constraint_rhs(model, con.prod_limit[g,n,t], prod_rhs);
-
-                    if t>0 and self.data.Generators[g].is_thermal:
-                        ramp_rhs = self.data.Generators[g].ramp_rate*self.data.Generators[g].nameplate_capacity*MP_vals.gen_operational[g,n];
-                        self.set_constraint_rhs(model, con.ramp_limit_up[g,n,t], ramp_rhs);
-                        self.set_constraint_rhs(model, con.ramp_limit_down[g,n,t], ramp_rhs);
-
-        if not self.Setting['is_copper_plate_approx']:
-            for l in range(self.data.num_lines):
-                for t in range(nT):
-                    if self.data.Lines[l].is_existing:
-                        flow_rhs = self.data.Lines[l].capacity + MP_vals.line_established[l];
-                    else:
-                        flow_rhs = MP_vals.line_established[l];
-                    self.set_constraint_rhs(model, con.flow_limit1[l,t], flow_rhs);
-                    self.set_constraint_rhs(model, con.flow_limit2[l,t], flow_rhs);
-
-        s = 0;
-        for n in range(self.data.num_nodes):
-            self.set_constraint_rhs(model, con.storage_SOC_balance[n], MP_vals.storage_level[s,n]/2);
-            for t in range(nT):
-                self.set_constraint_rhs(model, con.storage_charge_limit[n,t], MP_vals.storage_capacity[s,n]);
-                self.set_constraint_rhs(model, con.storage_discharge_limit[n,t], MP_vals.storage_capacity[s,n]);
-                self.set_constraint_rhs(model, con.storage_SOC_limit[n,t], MP_vals.storage_level[s,n]);
-
-        if self.Setting['Decarbonization_target'] > 0:
-            self.set_constraint_rhs(model, con.emissions_limit[0], MP_vals.emissions_per_period[sp]);
-
     def solve_SP_instance(self, sp):
-        if self.persistent_SP_enabled():
-            if self.SP_model[sp] is None:
-                self.build_SP_model(self.MP_DV_values, sp);
-            else:
-                self.update_SP_rhs(sp, self.MP_DV_values);
-        else:
-            self.build_SP_model(self.MP_DV_values, sp);
+        self.build_SP_model(self.MP_DV_values, sp);
         self.SP_model[sp].optimize();
-        self.require_optimal_solution(self.SP_model[sp], f'SP {sp}');
         self.get_SP_DV_dual_vals(sp); # both dual and DV values
         return sp, self.SP_Duals[sp]
     
@@ -326,13 +216,11 @@ class BD():
         # calculate LB_k
         LBk = self.LB + alpha*(self.UB - self.LB);
         reg_const = self.MP_model.add_linear_constraint(self.MP_DV.total_investment_cost + poi.quicksum(self.MP_DV.theta[s] for s in range(self.data.num_rep_periods)), poi.Leq, LBk);
-        try:
-            self.MP_model.optimize();
-            self.require_optimal_solution(self.MP_model, 'regularized MP');
-            # print(f'\t\t\t\t LBk value: {round(LBk/1e7)}e7 \n');
-            Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
-        finally:
-            self.MP_model.delete_constraint(reg_const);
+        self.MP_model.optimize();
+        # print(f'\t\t\t\t LBk value: {round(LBk/1e7)}e7 \n');
+        Get_Vals.get_investment_variable_values(self.MP_model, self.MP_DV, self.MP_DV_values, self.data);
+    
+        self.MP_model.delete_constraint(reg_const);
 
 
 

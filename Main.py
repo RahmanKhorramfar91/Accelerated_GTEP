@@ -42,7 +42,7 @@ Setting['hours_per_period'] = 7 * 24;
 Setting['RPS'] = 0.0;
 Setting['Decarbonization_target'] = 0.8;
 # Setting['solution_method'] = 'extensive_form';
-Setting['solution_method'] = 'BDD1'; # Regularized Benders
+Setting['solution_method'] = 'RBD'; # Regularized Benders
 
 data = Data(Setting);
 
